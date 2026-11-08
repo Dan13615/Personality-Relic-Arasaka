@@ -14,6 +14,22 @@ struct CapriSettings: Codable {
     /// Délai max sans aucune sortie du cerveau, en secondes.
     var timeoutSeconds: Double = 60
 
+    // MARK: Pouvoirs (étape 3)
+    /// Dossiers que Capri peut fouiller et lire (jamais modifier).
+    var allowedFolders: [String] = ["~/Desktop", "~/Documents", "~/Downloads"]
+    /// Décisions pour les Raccourcis : nom → "always" ou "never".
+    var shortcutDecisions: [String: String] = [:]
+    /// Moteur de recherche du navigateur de Capri ({q} = la recherche).
+    var searchURL: String = "https://duckduckgo.com/?q={q}"
+    /// Identifiant de l'agenda où créer les rappels (`nil` = choix automatique : Google, sinon l'agenda par défaut).
+    var reminderCalendarID: String?
+    /// Prévenir combien de minutes avant un événement qui n'a pas d'alerte.
+    var notifyMinutesBefore: Int = 10
+    /// Prévenir aussi pour les événements « toute la journée ».
+    var notifyAllDayEvents: Bool = false
+    /// Son joué avec une notification (nom d'un son système, ex. "Glass", "Tink" ; "" = aucun).
+    var notificationSound: String = "Glass"
+
     // Lecture tolérante : un réglage absent du fichier garde sa valeur par défaut.
     init() {}
     init(from decoder: Decoder) throws {
@@ -24,6 +40,13 @@ struct CapriSettings: Codable {
         claudePath = try c.decodeIfPresent(String.self, forKey: .claudePath)
         ollamaModel = try c.decodeIfPresent(String.self, forKey: .ollamaModel) ?? d.ollamaModel
         timeoutSeconds = try c.decodeIfPresent(Double.self, forKey: .timeoutSeconds) ?? d.timeoutSeconds
+        allowedFolders = try c.decodeIfPresent([String].self, forKey: .allowedFolders) ?? d.allowedFolders
+        shortcutDecisions = try c.decodeIfPresent([String: String].self, forKey: .shortcutDecisions) ?? d.shortcutDecisions
+        searchURL = try c.decodeIfPresent(String.self, forKey: .searchURL) ?? d.searchURL
+        reminderCalendarID = try c.decodeIfPresent(String.self, forKey: .reminderCalendarID)
+        notifyMinutesBefore = try c.decodeIfPresent(Int.self, forKey: .notifyMinutesBefore) ?? d.notifyMinutesBefore
+        notifyAllDayEvents = try c.decodeIfPresent(Bool.self, forKey: .notifyAllDayEvents) ?? d.notifyAllDayEvents
+        notificationSound = try c.decodeIfPresent(String.self, forKey: .notificationSound) ?? d.notificationSound
     }
 
     // MARK: Fichiers
@@ -42,6 +65,7 @@ struct CapriSettings: Codable {
     static func load() -> CapriSettings {
         if let data = try? Data(contentsOf: fileURL),
            let settings = try? JSONDecoder().decode(CapriSettings.self, from: data) {
+            settings.save()   // ajoute au fichier les nouveaux réglages, avec leur valeur par défaut
             return settings
         }
         let settings = CapriSettings()

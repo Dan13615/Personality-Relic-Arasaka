@@ -45,6 +45,7 @@ struct MoodParser {
         var text: String = ""          // texte à afficher
         var moodDecided = false        // vrai une seule fois : quand on sait enfin quelle humeur afficher
         var mood: Mood = .calme        // l'humeur (calme par défaut si la balise manque ou est inconnue)
+        var tagFound = false           // une vraie balise reconnue (et pas l'humeur par défaut)
     }
 
     private var buffer = ""
@@ -81,6 +82,6 @@ struct MoodParser {
     private mutating func resolve(mood: Mood?, text: String) -> Output {
         isResolved = true
         buffer = ""
-        return Output(text: text, moodDecided: true, mood: mood ?? .calme)
+        return Output(text: text, moodDecided: true, mood: mood ?? .calme, tagFound: mood != nil)
     }
 }

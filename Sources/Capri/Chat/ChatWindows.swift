@@ -74,14 +74,25 @@ final class ChatWindowController {
 
     /// Place la bulle par rapport au rectangle de Capri (coordonnées écran).
     func place(near sprite: CGRect, on screen: NSScreen) {
+        let (frame, tail) = BubblePlacement.frame(content: Self.contentSize, near: sprite, on: screen)
+        if layout.tail != tail { layout.tail = tail }
+        panel.setFrame(frame, display: true)
+    }
+}
+
+/// Calcule où mettre une bulle par rapport à Capri : au-dessus si possible, sinon à côté.
+@MainActor
+enum BubblePlacement {
+    static func frame(content size: CGSize, near sprite: CGRect, on screen: NSScreen,
+                      preferBeside: Bool = false) -> (CGRect, BubbleTail) {
         let area = screen.visibleFrame
-        let size = Self.contentSize, m = Self.margin, t = BubbleTail.length
+        let m = ChatWindowController.margin, t = BubbleTail.length
         var frame = CGRect.zero
         var tail = BubbleTail()
 
         // La pointe vise le haut de sa tête.
         let tipAbove = CGPoint(x: sprite.midX, y: sprite.maxY - sprite.height * 0.06)
-        if tipAbove.y + t + size.height + m <= area.maxY {
+        if !preferBeside && tipAbove.y + t + size.height + m <= area.maxY {
             // Assez de place au-dessus : bulle au-dessus, pointe en bas.
             frame.size = CGSize(width: size.width + 2 * m, height: size.height + t + 2 * m)
             frame.origin.x = min(max(tipAbove.x - frame.width / 2, area.minX), area.maxX - frame.width)
@@ -102,8 +113,46 @@ final class ChatWindowController {
             }
             tail.position = (frame.maxY - m) - tipY   // depuis le haut de la bulle
         }
+        return (frame, tail)
+    }
+}
+
+/// La bulle de notification d'agenda, à côté de Capri quand elle s'est téléportée en haut à gauche.
+@MainActor
+final class NotificationWindowController {
+    static let width: CGFloat = 300
+    private let panel = ChatPanel()
+    private let layout = BubbleLayout()
+    var isVisible: Bool { panel.isVisible }
+
+    init() {
+        panel.onCancel = {}
+    }
+
+    func show(text: String, time: String, buttons: [ChatButton], near sprite: CGRect, on screen: NSScreen) {
+        // On mesure d'abord la bulle (hauteur selon le texte), puis on la place à côté de Capri.
+        let measure = NSHostingView(rootView: NotificationBubbleView(text: text, time: time, buttons: buttons, layout: BubbleLayout()))
+        let fitting = measure.fittingSize
+        // (mesurée avec la pointe en bas : on retire la marge et la pointe pour garder le contenu seul)
+        let content = CGSize(width: Self.width,
+                             height: fitting.height - 2 * ChatWindowController.margin - BubbleTail.length)
+        let (frame, tail) = BubblePlacement.frame(content: content, near: sprite, on: screen, preferBeside: true)
+        layout.tail = tail
+        panel.contentView = NSHostingView(rootView: NotificationBubbleView(text: text, time: time, buttons: buttons, layout: layout))
+        panel.setFrame(frame, display: true)
+        panel.orderFrontRegardless()
+    }
+
+    func follow(sprite: CGRect, on screen: NSScreen) {
+        guard panel.isVisible else { return }
+        let content = CGSize(width: Self.width, height: panel.frame.height - 2 * ChatWindowController.margin)
+        let (frame, tail) = BubblePlacement.frame(content: content, near: sprite, on: screen, preferBeside: true)
         if layout.tail != tail { layout.tail = tail }
         panel.setFrame(frame, display: true)
+    }
+
+    func hide() {
+        panel.orderOut(nil)
     }
 }
 

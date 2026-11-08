@@ -34,18 +34,36 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key> <string>0.1</string>
     <key>CFBundleVersion</key>            <string>1</string>
     <key>LSMinimumSystemVersion</key>     <string>14.0</string>
+    <!-- Capri parle français : macOS lui donne aussi les noms d'apps en français (« Calculette »). -->
+    <key>CFBundleDevelopmentRegion</key>  <string>fr</string>
+    <key>CFBundleLocalizations</key>      <array><string>fr</string></array>
     <key>NSHighResolutionCapable</key>    <true/>
     <!-- Pas d'icône dans le Dock : Capri vit sur le bureau et dans la barre des menus. -->
     <key>LSUIElement</key>                <true/>
+    <!-- Les textes des fenêtres d'autorisation de macOS (affichés la première fois). -->
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Capri lit ton agenda pour te prévenir de tes rendez-vous, et y crée les rappels que tu lui demandes.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Capri peut chercher et lire les fichiers de ton Bureau quand tu le lui demandes (sans jamais les modifier).</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Capri peut chercher et lire tes Documents quand tu le lui demandes (sans jamais les modifier).</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Capri peut chercher et lire tes Téléchargements quand tu le lui demandes (sans jamais les modifier).</string>
     <!-- Où est le projet : l'app y relit Persona/capri.md à chaque message. -->
     <key>CapriProjectPath</key>           <string>$(pwd)</string>
 </dict>
 </plist>
 PLIST
 
-echo "▸ Signature ad hoc"
-# « - » = signature locale, sans compte développeur. Suffisant pour ton propre Mac.
-codesign --force --sign - "$APP"
+# Signature : l'identité stable « Capri Dev » si elle existe (voir Scripts/create-signing-identity.sh),
+# sinon « ad hoc » (-). Avec « ad hoc », macOS peut redemander les autorisations après chaque compilation.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q '"Capri Dev"'; then
+    echo "▸ Signature avec « Capri Dev »"
+    codesign --force --sign "Capri Dev" "$APP"
+else
+    echo "▸ Signature ad hoc (lance Scripts/create-signing-identity.sh pour garder les autorisations)"
+    codesign --force --sign - "$APP"
+fi
 
 # Si une ancienne Capri tourne encore, on la ferme avant de relancer.
 pkill -x Capri 2>/dev/null && sleep 0.5 || true

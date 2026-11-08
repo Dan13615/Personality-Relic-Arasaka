@@ -3,6 +3,28 @@ import AppKit
 /// Point d'entrée. On crée l'application à la main (pas de storyboard, pas de SwiftUI pour l'instant).
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Un menu principal invisible (Capri n'a pas de barre de menus à elle), juste pour que
+    /// ⌘C, ⌘V, ⌘X, ⌘A et ⌘Z marchent dans la bulle et le navigateur : ces raccourcis passent par le menu Édition.
+    static func editMenu() -> NSMenu {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        appItem.submenu = NSMenu()
+        appItem.submenu?.addItem(NSMenuItem(title: "Quitter Capri", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        main.addItem(appItem)
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Édition")
+        edit.addItem(NSMenuItem(title: "Annuler", action: Selector(("undo:")), keyEquivalent: "z"))
+        edit.addItem(NSMenuItem(title: "Rétablir", action: Selector(("redo:")), keyEquivalent: "Z"))
+        edit.addItem(.separator())
+        edit.addItem(NSMenuItem(title: "Couper", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        edit.addItem(NSMenuItem(title: "Copier", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        edit.addItem(NSMenuItem(title: "Coller", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        edit.addItem(NSMenuItem(title: "Tout sélectionner", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editItem.submenu = edit
+        main.addItem(editItem)
+        return main
+    }
+
     private var controller: PetController?
     private var menu: CapriMenu?
 
@@ -12,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = CapriMenu(controller: controller)
         controller.menuProvider = { [weak menu] in menu?.makeMenu() ?? NSMenu() }
         menu.installStatusItem(icon: library.menuBarIcon())
+        NSApp.mainMenu = Self.editMenu()
         controller.start()
         self.controller = controller
 
@@ -34,6 +57,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 MainActor.assumeIsolated {
     // Mode test caché : `Capri --selftest "message" ["message 2" …]`, sans interface.
     let arguments = CommandLine.arguments
+    // Mode relais MCP : lancé par `claude` pour accéder aux pouvoirs de Capri (voir ToolServer.swift).
+    if arguments.contains("--mcp-server") {
+        MCPServer.run()
+    }
     if let index = arguments.firstIndex(of: "--selftest") {
         SelfTest.run(messages: Array(arguments[(index + 1)...]))
         dispatchMain()   // fait tourner la boucle principale ; SelfTest quitte à la fin

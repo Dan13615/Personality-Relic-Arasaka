@@ -21,6 +21,7 @@ enum PetState: Equatable {
     case chatting                       // la bulle de discussion est ouverte : elle écoute
     case thinking                       // elle prépare sa réponse (tape sur son ordi)
     case emoting(Pose)                  // elle répond, dans la pose de son humeur
+    case notifying                      // elle te prévient d'un événement, en haut à gauche de l'écran
 
     /// La pose à afficher pour cet état.
     var pose: Pose {
@@ -41,6 +42,7 @@ enum PetState: Equatable {
         case .chatting: return .sitCurious
         case .thinking: return .hacking
         case .emoting(let pose): return pose
+        case .notifying: return .sitCurious
         }
     }
 }
@@ -110,6 +112,8 @@ final class BehaviorMachine {
     }
 
     private func chooseNextActivity() {
+        // Pendant une notification, elle reste là où elle est, jusqu'au « OK ».
+        if state == .notifying { return }
         // Pendant une discussion, elle ne part pas se balader : elle revient écouter.
         if isChatOpen {
             transition(to: .chatting, duration: nil)
@@ -182,7 +186,7 @@ final class BehaviorMachine {
 
     /// Caresse (va-et-vient de la souris sur elle).
     func pet() {
-        guard !isHeld, !isAnswering, state != .sleeping else { return }
+        guard !isHeld, !isAnswering, state != .sleeping, state != .notifying else { return }
         if state == .reacting(.love) {
             stateEndsAt = now + 2   // on prolonge, sans relancer l'animation
         } else {
@@ -212,7 +216,7 @@ final class BehaviorMachine {
 
     /// L'utilisateur n'a rien touché depuis ~3 minutes.
     func userBecameIdle() {
-        guard !isHeld, !isChatOpen, state != .sleeping else { return }
+        guard !isHeld, !isChatOpen, state != .sleeping, state != .notifying else { return }
         transition(to: .sleeping, duration: nil)
     }
 
@@ -248,13 +252,13 @@ final class BehaviorMachine {
 
     /// Message envoyé : elle réfléchit (pose hacking) en attendant les premiers mots.
     func startThinking() {
-        guard !isHeld else { return }
+        guard !isHeld, state != .notifying else { return }
         transition(to: .thinking, duration: nil)
     }
 
     /// Les premiers mots arrivent avec une humeur : on prend la pose correspondante.
     func emote(_ pose: Pose) {
-        guard !isHeld else { return }
+        guard !isHeld, state != .notifying else { return }
         transition(to: .emoting(pose), duration: nil)
     }
 
@@ -265,6 +269,20 @@ final class BehaviorMachine {
         case .thinking: chooseNextActivity()
         default: break
         }
+    }
+
+    // MARK: - Notifications d'agenda
+
+    /// Une notification arrive : elle se téléporte en haut à gauche et attend (réveil compris).
+    func notify() {
+        isForcedSleep = false
+        transition(to: .notifying, duration: nil)
+    }
+
+    /// Notification fermée : elle redescend au sol en tombant.
+    func notificationDone() {
+        guard state == .notifying else { return }
+        transition(to: .falling, duration: nil)
     }
 
     // MARK: - Menu

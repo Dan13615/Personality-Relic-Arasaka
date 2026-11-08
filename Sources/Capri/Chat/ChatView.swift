@@ -249,7 +249,86 @@ struct MessageRow: View {
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
+        case .action:
+            // Une action de Capri : petite ligne façon journal système.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if message.isRunning {
+                        ProgressView().controlSize(.mini).tint(Theme.green)
+                    }
+                    Text(message.text)
+                        .font(Theme.mono(10.5))
+                        .foregroundStyle(message.isRunning ? Theme.dim : Theme.green.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ButtonRow(buttons: message.buttons)
+            }
+        case .notice:
+            // Une question ou une notification : encadré néon, avec ses boutons.
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message.text)
+                    .font(Theme.mono(12))
+                    .foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                ButtonRow(buttons: message.buttons)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.magenta.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.magenta.opacity(0.7), lineWidth: 1))
         }
+    }
+}
+
+/// Une rangée de petits boutons néon.
+struct ButtonRow: View {
+    let buttons: [ChatButton]
+    var body: some View {
+        if !buttons.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(buttons) { button in
+                    Button(action: button.action) {
+                        Text(button.title)
+                            .font(Theme.mono(10.5, .semibold))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .foregroundStyle(button.isPrimary ? Theme.background : Theme.magenta)
+                            .background(Capsule().fill(button.isPrimary ? Theme.magenta : Color.clear))
+                            .overlay(Capsule().stroke(Theme.magenta, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+/// La bulle de notification d'agenda, quand Capri se téléporte en haut à gauche pour te prévenir.
+struct NotificationBubbleView: View {
+    let text: String
+    let time: String
+    let buttons: [ChatButton]
+    @ObservedObject var layout: BubbleLayout
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Circle().fill(Theme.magenta).frame(width: 6, height: 6).shadow(color: Theme.magenta, radius: 3)
+                Text("CAPRI://rappel").font(Theme.mono(11, .bold)).foregroundStyle(Theme.magenta)
+                Spacer()
+                Text(time).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+            }
+            Text(text)
+                .font(Theme.mono(12.5))
+                .foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+            ButtonRow(buttons: buttons)
+        }
+        .padding(14)
+        .frame(width: NotificationWindowController.width, alignment: .leading)
+        .padding(layout.tail.insets)
+        .background(NeonBubbleBackground(tail: layout.tail))
+        .padding(8)
     }
 }
 

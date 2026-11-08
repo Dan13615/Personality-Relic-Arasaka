@@ -1,5 +1,12 @@
 import Foundation
 
+/// Ce que le cerveau envoie pendant sa réponse.
+enum BrainEvent {
+    case text(String)          // un morceau de texte
+    case newMessage            // un nouveau message commence (par exemple après l'utilisation d'un outil)
+    case webTool(String)       // il utilise un outil web intégré de Claude (WebSearch, WebFetch)
+}
+
 /// Un « cerveau » : quelque chose qui sait répondre à un message, morceau par morceau.
 ///
 /// Grâce à ce protocole, le reste de l'app ne sait pas (et n'a pas besoin de savoir)
@@ -9,10 +16,10 @@ protocol ChatBrain: AnyObject {
     /// Nom affiché dans le menu.
     var displayName: String { get }
 
-    /// Envoie un message et renvoie la réponse sous forme de flux de morceaux de texte.
+    /// Envoie un message et renvoie la réponse sous forme de flux d'événements (surtout du texte).
     /// Le cerveau garde lui-même le fil de la conversation.
     /// Arrêter de lire le flux (bouton stop) interrompt la réponse.
-    func reply(to message: String, systemPrompt: String) -> AsyncThrowingStream<String, Error>
+    func reply(to message: String, systemPrompt: String) -> AsyncThrowingStream<BrainEvent, Error>
 
     /// Oublie la conversation (« Nouvelle conversation »).
     func reset()

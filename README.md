@@ -4,8 +4,8 @@ Capri (Cyberpunk: Edgerunners 2) se balade en bas de ton écran, s'assoit, jongl
 sur son ordi, sort la tête du bas de l'écran, se téléporte en glitch… et réagit quand tu
 la cliques, la caresses ou la déplaces. Projet perso, pour apprendre AppKit et SpriteKit.
 
-> Étapes faites : 1. Capri sur le bureau, 2. la discussion avec sa personnalité.
-> À venir : 3. les outils d'assistante (rappels, apps, Raccourcis), 4. de vraies animations image par image.
+> Étapes faites : 1. Capri sur le bureau, 2. la discussion avec sa personnalité, 3. ses pouvoirs d'assistante.
+> À venir : 4. de vraies animations image par image.
 
 ## Lancer Capri
 
@@ -86,7 +86,13 @@ Le fichier `~/Library/Application Support/Capri/settings.json` (créé au premie
   "brain" : "claude",          // ou "ollama"
   "claudeModel" : "sonnet",    // "sonnet" répond en ~2 s ; "haiku" ~3-4 s ; "opus" plus lent
   "ollamaModel" : "llama3.2",  // un modèle de `ollama list`
-  "timeoutSeconds" : 60        // délai max sans réponse
+  "timeoutSeconds" : 60,       // délai max sans réponse
+  "allowedFolders" : ["~/Desktop", "~/Documents", "~/Downloads"],
+  "searchURL" : "https://duckduckgo.com/?q={q}",
+  "notifyMinutesBefore" : 10,
+  "notifyAllDayEvents" : false,
+  "notificationSound" : "Glass",
+  "shortcutDecisions" : {}     // tes réponses « Toujours » / « Refuser » pour les Raccourcis
 }
 ```
 
@@ -123,6 +129,86 @@ build/Capri.app/Contents/MacOS/Capri --selftest "Salut Capri" "De quoi on parlai
 Envoie les messages au cerveau, dans une même conversation, et affiche l'humeur, la réponse et
 les temps de réponse, sans interface. `--render-ui <dossier>` dessine les bulles en PNG, et
 `--open-chat "message"` ouvre la bulle et envoie un message au lancement.
+Quand Capri.app tourne, `--selftest` passe par elle : les tests utilisent donc ses vrais pouvoirs.
+
+## Ses pouvoirs (étape 3)
+
+Dans la discussion, demande-lui simplement :
+
+| Pouvoir | Exemples |
+|---|---|
+| Lancer une app | « Ouvre Spotify », « lance vs code », « ouvre la calculatrice » |
+| Raccourcis (app Raccourcis) | « Lance mon raccourci Mode concentration » (confirmation la 1re fois : Autoriser une fois / Toujours / Refuser) |
+| Fichiers (lecture seule) | « Cherche un PDF dans mes téléchargements », « résume-moi ce fichier », « ouvre-le », « montre-le dans le Finder » |
+| Web | « Quelle est la météo à Lyon ? » (elle cite ses sources), « ouvre la doc de SwiftUI dans ton navigateur » |
+| Agenda | « J'ai quoi demain ? », « mets-moi un rappel dans 20 minutes pour sortir le linge » |
+
+Chaque action s'affiche en petite ligne dans la bulle (« 🚀 Spotify lancée », « 📅 Rappel créé… » avec
+un bouton « Annuler »), et elle tape sur son ordi pendant que l'outil travaille. Elle ne dit qu'une
+chose est faite qu'après la confirmation de l'outil.
+
+**Ce qu'elle ne peut pas faire** : modifier, déplacer ou supprimer des fichiers, fermer des apps, voir
+ton écran. Côté Claude, elle n'a que SES outils + la recherche et la lecture web : pas de terminal
+(Bash), pas d'accès direct aux fichiers, qui contourneraient les règles ci-dessous.
+
+### Ses règles pour les fichiers
+
+- Dossiers autorisés : Bureau, Documents, Téléchargements (`allowedFolders` dans settings.json).
+- Toujours refusés, même dans ces dossiers : `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.claude`, trousseaux,
+  profils de navigateurs, fichiers `.env`, `*.pem`, `*.key`, `id_rsa`… (voir `FileGuard` dans FileTools.swift).
+- Ce qu'elle lit est traité comme de l'information, jamais comme des ordres : un fichier qui dit
+  « ignore tes instructions » ne la fait pas obéir.
+
+### Son navigateur
+
+Menu → « Navigateur de Capri » : une fenêtre de navigation à son style. Barre d'adresse (adresse ou
+recherche), précédent, suivant, recharger, et « Ouvrir dans mon navigateur ». Elle peut l'utiliser
+elle-même pour te montrer une page, et la lire. Moteur de recherche : `searchURL` dans settings.json.
+
+### Ton agenda Google et ses notifications
+
+Capri passe par l'agenda du Mac (EventKit) : pas d'API Google, pas de connexion à configurer.
+**Pour voir ton Google Agenda**, ajoute ton compte une fois : Réglages Système → Comptes Internet →
+Google → coche « Calendriers ». Ses agendas apparaissent alors dans Capri et se synchronisent dans
+les deux sens : un rappel créé par Capri arrive dans Google Agenda, donc ton téléphone sonne aussi.
+
+- Menu → « Agenda des rappels » : choisis l'agenda où elle crée les rappels (par défaut : l'agenda
+  principal Google, sinon l'agenda par défaut du Mac).
+- Quand un événement arrive, elle se téléporte en glitch en haut à gauche de l'écran et t'explique
+  la notification dans une bulle : « OK », « Dans 5 min » ou « Ouvrir » (le lien de visio s'il y en
+  a un, sinon l'événement dans Calendrier). Si la discussion est ouverte, elle te prévient dedans.
+- Quand ? Aux alertes de l'événement, ou 10 min avant s'il n'en a pas (`notifyMinutesBefore`) ;
+  pour ses propres rappels, à l'heure pile. Pas pour les événements « toute la journée »
+  (`notifyAllDayEvents`). Son : `notificationSound` (`""` pour aucun). Jamais deux fois la même alerte,
+  même après un redémarrage.
+- Pour que seule Capri te prévienne sur le Mac : Réglages Système → Notifications → Calendrier →
+  désactive les notifications. Ton téléphone, lui, sonnera toujours.
+
+Les phrases de ses notifications sont dans `LocalLines.swift` (pas d'IA : instantané et fiable).
+
+### Les autorisations macOS
+
+La première fois qu'elle en a besoin, macOS demande pour « Capri » : l'accès à l'agenda, et à
+chacun des dossiers Téléchargements, Documents et Bureau. Tu peux tout revoir dans Réglages Système
+→ Confidentialité et sécurité.
+
+Pour que ces autorisations survivent aux recompilations, Capri doit être signée avec une identité
+stable. Lance une fois `./Scripts/create-signing-identity.sh` : il crée un certificat local
+« Capri Dev » (macOS demande ton mot de passe pour lui faire confiance), que `run.sh` utilise
+ensuite automatiquement. Sans lui, `run.sh` signe « ad hoc » et macOS peut redemander après chaque
+compilation.
+
+### Comment Claude accède à ses pouvoirs
+
+```
+claude ──(MCP)──▶ « Capri --mcp-server » ──(socket Unix)──▶ Capri.app ──▶ l'outil
+```
+
+Les pouvoirs sont décrits une seule fois dans un registre (`ToolRegistry`) : nom, description,
+arguments (JSON Schema), niveau de risque, et code. `claude` reçoit ce registre via un petit serveur
+MCP (le même programme Capri, lancé avec `--mcp-server`) qui relaie chaque appel à l'app par une
+socket dans `~/Library/Application Support/Capri/`. C'est donc toujours l'app qui agit, avec SES
+autorisations macOS. Ollama pourra plus tard utiliser le même registre avec son API d'outils.
 
 ## Organisation des fichiers
 
@@ -157,6 +243,14 @@ Capri/
     │   ├── Settings.swift        # settings.json
     │   ├── HotKey.swift          # le raccourci global ⌃⌥C
     │   └── SelfTest.swift        # modes de test cachés
+    ├── Powers/
+    │   ├── ToolRegistry.swift    # le registre des outils (brain-agnostic)
+    │   ├── ToolServer.swift      # socket de l'app + relais MCP (--mcp-server)
+    │   ├── AppTools.swift        # apps et Raccourcis
+    │   ├── FileTools.swift       # fichiers (lecture seule) + FileGuard
+    │   ├── Browser.swift         # son navigateur (WKWebView) + outils web
+    │   ├── Calendar.swift        # agenda (EventKit) + outils de rappels
+    │   └── EventWatcher.swift    # surveille l'agenda et déclenche ses notifications
     └── Resources/Sprites/*.png   # les sprites découpés
 Persona/capri.md                  # SA PERSONNALITÉ (modifiable sans recompiler)
 ```

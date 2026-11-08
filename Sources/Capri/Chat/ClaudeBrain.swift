@@ -12,9 +12,23 @@ final class ClaudeBrain: ChatBrain {
     private let settings: CapriSettings
     /// L'identifiant de la conversation en cours, renvoyé par Claude. `nil` = nouvelle conversation.
     private var sessionID: String?
+    /// Donner ses pouvoirs à Capri (outils MCP + recherche web). Faux pour une discussion seule.
+    var withPowers = true
+    /// Vrai quand un outil de Capri travaille : le chien de garde patiente (ex. confirmation d'un Raccourci).
+    var isToolRunning: () -> Bool = { false }
 
     init(settings: CapriSettings) {
         self.settings = settings
+    }
+
+    /// La configuration MCP : `claude` lancera « Capri --mcp-server », qui relaie vers l'app.
+    private var mcpConfig: String {
+        let executable = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        let config: [String: Any] = ["mcpServers": ["capri": [
+            "type": "stdio", "command": executable, "args": ["--mcp-server"],
+        ]]]
+        let data = (try? JSONSerialization.data(withJSONObject: config)) ?? Data()
+        return String(data: data, encoding: .utf8) ?? "{}"
     }
 
     func reset() {
@@ -38,12 +52,25 @@ final class ClaudeBrain: ChatBrain {
             "--include-partial-messages",        // les morceaux de texte au fur et à mesure
             "--system-prompt", systemPrompt,     // SA personnalité remplace le prompt par défaut
             "--system-prompt-snapshot", "off",   // relit le prompt à chaque message (date, heure, persona modifiée)
-            "--tools", "",                       // aucun outil : à cette étape, elle ne fait que parler
-            "--strict-mcp-config",               // aucun serveur MCP
+            "--strict-mcp-config",               // aucun autre serveur MCP que le sien
             "--setting-sources", "",             // ni tes réglages ni ceux d'un projet
             "--disable-slash-commands",
             "--model", settings.claudeModel,
         ]
+        if withPowers {
+            args += [
+                // Outils intégrés de Claude Code : SEULEMENT la recherche et la lecture web.
+                // Pas de Bash, Read, Write… : ils contourneraient les règles de dossiers de Capri.
+                "--tools", "WebSearch,WebFetch",
+                // Ses pouvoirs à elle, via notre serveur MCP « capri ».
+                "--mcp-config", mcpConfig,
+                // Autorisés sans question ; tout le reste est refusé d'office (dontAsk).
+                "--allowedTools", "mcp__capri,WebSearch,WebFetch",
+                "--permission-mode", "dontAsk",
+            ]
+        } else {
+            args += ["--tools", ""]   // discussion seule
+        }
         if let sessionID {
             args += ["--resume", sessionID]
         }
@@ -52,7 +79,7 @@ final class ClaudeBrain: ChatBrain {
 
     // MARK: - Réponse
 
-    func reply(to message: String, systemPrompt: String) -> AsyncThrowingStream<String, Error> {
+    func reply(to message: String, systemPrompt: String) -> AsyncThrowingStream<BrainEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 do {
@@ -68,14 +95,16 @@ final class ClaudeBrain: ChatBrain {
     }
 
     private func run(message: String, systemPrompt: String,
-                     continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
+                     continuation: AsyncThrowingStream<BrainEvent, Error>.Continuation) async throws {
         guard let executable = ClaudeLocator.find(settings: settings) else { throw BrainError.claudeNotFound }
 
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments(message: message, systemPrompt: systemPrompt)
         process.currentDirectoryURL = Self.workingDirectory
-        process.environment = ClaudeLocator.environment(for: executable)
+        var environment = ClaudeLocator.environment(for: executable)
+        environment["MCP_TOOL_TIMEOUT"] = "600000"   // 10 min : le temps de confirmer un Raccourci
+        process.environment = environment
         process.standardInput = FileHandle.nullDevice   // sinon claude attend 3 s une entrée
         let output = Pipe(), errors = Pipe()
         process.standardOutput = output
@@ -86,9 +115,11 @@ final class ClaudeBrain: ChatBrain {
         var lastOutput = Date()
         var timedOut = false
         let timeout = settings.timeoutSeconds
+        let isToolRunning = self.isToolRunning
         let watchdog = Task { @MainActor in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if isToolRunning() { lastOutput = Date(); continue }   // un outil travaille : on patiente
                 if Date().timeIntervalSince(lastOutput) > timeout {
                     timedOut = true
                     process.terminate()
@@ -113,14 +144,26 @@ final class ClaudeBrain: ChatBrain {
 
                 switch json["type"] as? String {
                 case "stream_event":
-                    // Un morceau de texte : {"event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "…"}}}
-                    if let event = json["event"] as? [String: Any],
-                       event["type"] as? String == "content_block_delta",
-                       let delta = event["delta"] as? [String: Any],
-                       delta["type"] as? String == "text_delta",
-                       let text = delta["text"] as? String {
-                        streamedText = true
-                        continuation.yield(text)
+                    guard let event = json["event"] as? [String: Any] else { break }
+                    switch event["type"] as? String {
+                    case "message_start":
+                        continuation.yield(.newMessage)
+                    case "content_block_start":
+                        // Début d'un appel d'outil. Les nôtres (mcp__capri__…) sont affichés par l'app elle-même.
+                        if let block = event["content_block"] as? [String: Any],
+                           let name = block["name"] as? String, !name.hasPrefix("mcp__") {
+                            continuation.yield(.webTool(name))
+                        }
+                    case "content_block_delta":
+                        // Un morceau de texte : {"delta": {"type": "text_delta", "text": "…"}}
+                        if let delta = event["delta"] as? [String: Any],
+                           delta["type"] as? String == "text_delta",
+                           let text = delta["text"] as? String {
+                            streamedText = true
+                            continuation.yield(.text(text))
+                        }
+                    default:
+                        break
                     }
                 case "result":
                     finalResult = json["result"] as? String
@@ -151,7 +194,7 @@ final class ClaudeBrain: ChatBrain {
         }
 
         // Sans morceaux en direct (vieille version de claude ?), on envoie le résultat d'un coup.
-        if !streamedText, let finalResult { continuation.yield(finalResult) }
+        if !streamedText, let finalResult { continuation.yield(.text(finalResult)) }
         sessionID = newSessionID ?? sessionID
     }
 }

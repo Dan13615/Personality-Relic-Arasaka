@@ -62,6 +62,12 @@ final class CapriMenu: NSObject, NSMenuDelegate {
         menu.addItem(item("Modifier sa personnalité…", #selector(editPersona)))
         menu.addItem(.separator())
 
+        menu.addItem(item("Navigateur de Capri", #selector(openBrowser)))
+        let calendarItem = NSMenuItem(title: "Agenda des rappels", action: nil, keyEquivalent: "")
+        calendarItem.submenu = calendarMenu()
+        menu.addItem(calendarItem)
+        menu.addItem(.separator())
+
         let calmTitle = controller.machine.isCalm ? "Reprendre" : "Rester tranquille"
         menu.addItem(item(calmTitle, #selector(toggleCalm)))
 
@@ -83,6 +89,38 @@ final class CapriMenu: NSObject, NSMenuDelegate {
         menu.addItem(item("Quitter Capri", #selector(quit), key: "q"))
     }
 
+    /// Les agendas où Capri peut écrire ; celui des rappels est coché.
+    private func calendarMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let service = controller.calendar
+        guard service.hasAccess else {
+            menu.addItem(item("Autoriser l'accès à l'agenda…", #selector(requestCalendarAccess)))
+            return menu
+        }
+        let current = service.reminderCalendar?.calendarIdentifier
+        // Regroupés par compte (Google, iCloud, Sur mon Mac…).
+        let bySource = Dictionary(grouping: service.writableCalendars) { $0.source.title }
+        for source in bySource.keys.sorted() {
+            let header = NSMenuItem(title: source, action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            for calendar in bySource[source]!.sorted(by: { $0.title < $1.title }) {
+                let entry = item("   " + calendar.title, #selector(chooseCalendar(_:)))
+                entry.representedObject = calendar.calendarIdentifier
+                entry.state = calendar.calendarIdentifier == current ? .on : .off
+                menu.addItem(entry)
+            }
+        }
+        if service.googleCalendars.isEmpty {
+            menu.addItem(.separator())
+            let hint = NSMenuItem(title: "Aucun agenda Google : Réglages Système → Comptes Internet", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+        }
+        return menu
+    }
+
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
@@ -90,6 +128,14 @@ final class CapriMenu: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleChat() { controller.toggleChat() }
+    @objc private func openBrowser() { controller.browser.show() }
+    @objc private func requestCalendarAccess() { controller.requestCalendarAccess() }
+
+    @objc private func chooseCalendar(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let calendar = controller.calendar.store.calendar(withIdentifier: id) else { return }
+        controller.calendar.chooseCalendar(calendar)
+    }
     @objc private func newConversation() { controller.newConversation() }
     @objc private func editPersona() { controller.editPersona() }
     @objc private func toggleCalm() { controller.toggleCalm() }

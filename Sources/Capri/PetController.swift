@@ -28,6 +28,18 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
     private let speech = SpeechBubbleController()
     private var hotKey: HotKey?
 
+    // MARK: Pouvoirs (étape 3)
+    let registry = ToolRegistry()
+    private(set) lazy var calendar = CalendarService { [unowned self] in self.settings }
+    private lazy var watcher = EventWatcher(calendar: calendar)
+    let browser = BrowserWindowController()
+    private var toolServer: ToolSocketServer?
+    private let notificationWindow = NotificationWindowController()
+    private var notificationQueue: [EventNotification] = []
+    private var currentNotification: EventNotification?
+    /// Vrai quand elle redescend après une notification : pas de « Aïe, bobo… » à l'atterrissage.
+    private var silentLanding = false
+
     /// Fournit le menu (clic droit). C'est `CapriMenu` qui le construit.
     var menuProvider: (() -> NSMenu)?
 
@@ -95,6 +107,7 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         // Les bulles suivent Capri quand elle bouge (par exemple quand on la traîne).
         if chat.isOpen { chat.place(near: spriteRect, on: screen) }
         speech.follow(sprite: spriteRect, on: screen)
+        notificationWindow.follow(sprite: spriteRect, on: screen)
     }
 
     /// Le rectangle du sprite à l'écran : sert à placer les bulles.
@@ -145,6 +158,7 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
         observeSystem()
         setUpChat()
+        setUpPowers()
         machine.start()
         log.notice("Capri démarrée (taille \(self.size.rawValue, privacy: .public))")
     }
@@ -261,6 +275,20 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             scene.show(pose, facingRight: facingRight)
             scene.play(ambient(for: pose))
             if pose == .love { scene.emitHearts(count: 5) }
+
+        case .notifying:
+            // Téléportation glitch en haut à gauche de l'écran principal, puis la bulle.
+            scene.glitchOut { [weak self] in
+                guard let self else { return }
+                self.screen = NSScreen.screens.first ?? self.screen
+                self.feet = self.cornerFeet
+                self.facingRight = true
+                self.moveWindow()
+                self.scene.resetEffects()
+                self.scene.show(.sitCurious, facingRight: true, glitch: false)
+                self.scene.play(.sway)
+                self.scene.glitchIn { [weak self] in self?.showNotificationBubble() }
+            }
         }
         updateRendering()
     }
@@ -328,7 +356,8 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             moveWindow()
             machine.landed()          // nouvel état d'abord (il remet les effets à zéro)…
             scene.landingSquash()     // …puis l'écrasement par-dessus
-            say(.dropped)
+            if silentLanding { silentLanding = false } else { say(.dropped) }
+            presentNextNotification() // une notification attendait peut-être la fin du glisser
         } else {
             moveWindow()
         }
@@ -340,7 +369,7 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
     private func updateRendering() {
         let fps: Int
         switch machine.state {
-        case .dragged, .falling, .teleporting, .appearing, .reacting: fps = 60
+        case .dragged, .falling, .teleporting, .appearing, .reacting, .notifying: fps = 60
         case .floating, .playing, .peeking, .emoting: fps = 30
         case .hacking, .thinking: fps = 20      // les petits rebonds de frappe sont rapides
         default: fps = 12            // assise, accoudée… : la respiration n'a pas besoin de plus
@@ -374,6 +403,12 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             // Quelques points de marge : un clic un peu tremblant reste un clic.
             guard hypot(mouse.x - pressPoint.x, mouse.y - pressPoint.y) > 4 else { return }
             isDragging = true
+            // Attrapée pendant une notification : on la range, elle reviendra après l'atterrissage.
+            if let pending = currentNotification {
+                notificationWindow.hide()
+                currentNotification = nil
+                notificationQueue.insert(pending, at: 0)
+            }
             machine.dragBegan()
         }
         feet = CGPoint(x: mouse.x - grabOffset.dx, y: mouse.y - grabOffset.dy)
@@ -399,6 +434,8 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
     /// LE point d'entrée d'un clic simple sur Capri : il ouvre ou ferme la discussion.
     private func handleClick() {
+        // Pendant une notification, on répond avec les boutons de la bulle.
+        if machine.state == .notifying { return }
         // Easter egg : 3 clics rapides, elle se débat (et la bulle ne bouge pas).
         if machine.registerClick() { return }
         toggleChat()
@@ -411,6 +448,8 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         chat.model.onThinking = { [weak self] in self?.machine.startThinking() }
         chat.model.onMood = { [weak self] mood in self?.machine.emote(mood.pose) }
         chat.model.onReplyEnded = { [weak self] in self?.machine.replyEnded() }
+        chat.model.registry = registry
+        claudeBrain.isToolRunning = { [weak self] in (self?.registry.activeCalls ?? 0) > 0 }
         chat.onClose = { [weak self] in self?.machine.chatClosed() }
         hotKey = HotKey { [weak self] in self?.toggleChat() }
         refreshOllama()
@@ -456,6 +495,175 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             NSWorkspace.shared.open([url], withApplicationAt: textEdit, configuration: configuration)
         } else {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - Pouvoirs
+
+    private func setUpPowers() {
+        registry.register(AppTools.all(registry: registry, settings: { [unowned self] in self.settings },
+                                       saveDecision: { [weak self] name, decision in
+                                           self?.settings.shortcutDecisions[name] = decision
+                                           self?.settings.save()
+                                       }))
+        registry.register(FileTools.all(settings: { [unowned self] in self.settings }))
+        registry.register(BrowserTools.all(browser: browser))
+        registry.register(CalendarTools.all(calendar: calendar) { [weak self] in
+            // L'agenda vient de changer (ou l'accès vient d'être accordé) : on surveille.
+            self?.watcher.start()
+            self?.watcher.refresh()
+        })
+        browser.model.searchURL = { [unowned self] in self.settings.searchURL }
+        calendar.saveCalendarID = { [weak self] id in
+            self?.settings.reminderCalendarID = id
+            self?.settings.save()
+        }
+        watcher.onNotify = { [weak self] in self?.enqueue($0) }
+        watcher.start()   // seulement si l'accès à l'agenda est déjà accordé
+
+        // La socket par laquelle le relais MCP (et le mode --selftest) parlent à l'app.
+        toolServer = ToolSocketServer { [weak self] request, send in
+            await self?.handleSocket(request, send: send)
+        }
+        toolServer?.start()
+    }
+
+    /// Une demande arrive sur la socket.
+    private func handleSocket(_ request: [String: Any], send: @escaping ([String: Any]) -> Void) async {
+        switch request["op"] as? String {
+        case "list":
+            send(["tools": registry.definitions])
+        case "call":
+            let name = request["name"] as? String ?? ""
+            let result = await registry.call(name, arguments: request["arguments"] as? [String: Any] ?? [:])
+            send(["text": result.text, "isError": result.isError])
+        case "chat":
+            await runSelfTest(messages: request["messages"] as? [String] ?? [], send: send)
+        default:
+            send(["error": "opération inconnue"])
+        }
+    }
+
+    /// Le mode --selftest : une conversation à part (invisible), avec tous les pouvoirs,
+    /// dont on renvoie le déroulé au Terminal. Capri s'anime quand même à l'écran.
+    private func runSelfTest(messages: [String], send: @escaping ([String: Any]) -> Void) async {
+        let brain = ClaudeBrain(settings: settings)
+        brain.isToolRunning = { [weak self] in (self?.registry.activeCalls ?? 0) > 0 }
+        let model = ChatModel { brain }
+        model.registry = registry
+        model.onThinking = { [weak self] in self?.machine.startThinking() }
+        model.onReplyEnded = { [weak self] in self?.machine.replyEnded() }
+        for message in messages {
+            let before = model.messages.count
+            let start = Date()
+            var firstWords: TimeInterval?
+            var mood = "aucune"
+            model.onMood = { [weak self] m in
+                if firstWords == nil { firstWords = Date().timeIntervalSince(start) }
+                mood = m.rawValue
+                self?.machine.emote(m.pose)
+            }
+            model.input = message
+            model.send()
+            await model.task?.value
+            let lines = model.messages.dropFirst(before + 1).map { m -> String in
+                switch m.role {
+                case .capri: return m.text
+                case .action: return "  [action] " + m.text
+                case .error: return "  [erreur] " + m.text + " — " + (m.detail ?? "")
+                case .notice: return "  [question] " + m.text
+                case .user: return "» " + m.text
+                }
+            }
+            send(["message": message, "mood": mood, "lines": lines,
+                  "firstWords": firstWords ?? -1, "total": Date().timeIntervalSince(start)])
+        }
+    }
+
+    // MARK: - Notifications d'agenda
+
+    /// La position de ses pieds en haut à gauche de l'écran principal, juste sous la barre des menus.
+    private var cornerFeet: CGPoint {
+        let area = (NSScreen.screens.first ?? screen).visibleFrame
+        return CGPoint(x: area.minX + spriteSize.width * 0.4 + 8, y: area.maxY - spriteSize.height)
+    }
+
+    private func enqueue(_ notification: EventNotification) {
+        if !settings.notificationSound.isEmpty { NSSound(named: settings.notificationSound)?.play() }
+        log.notice("Notification : \(notification.title, privacy: .public)")
+        // Discussion ouverte : on prévient dans la discussion, sans partir se téléporter.
+        if chat.isOpen {
+            chat.model.appendNotice("🔔 " + LocalLines.notification(notification), buttons: [
+                ChatButton(title: "Ouvrir") { [weak self] in self?.openEvent(notification) },
+                ChatButton(title: "Dans 5 min") { [weak self] in self?.snooze(notification) },
+            ])
+            return
+        }
+        notificationQueue.append(notification)
+        presentNextNotification()
+    }
+
+    /// Présente la notification suivante, une à la fois.
+    private func presentNextNotification() {
+        guard currentNotification == nil, !isDragging, !notificationQueue.isEmpty else { return }
+        if case .falling = machine.state { return }   // on attend l'atterrissage
+        currentNotification = notificationQueue.removeFirst()
+        speech.hide()
+        if machine.state == .notifying {
+            showNotificationBubble()   // déjà en haut à gauche
+        } else {
+            machine.notify()           // téléportation, puis la bulle (voir enter(.notifying))
+        }
+    }
+
+    private func showNotificationBubble() {
+        guard let notification = currentNotification else { return }
+        let time = notification.isAllDay ? "aujourd'hui" : "à " + CalendarService.french(notification.start, withDay: false)
+        notificationWindow.show(text: LocalLines.notification(notification), time: time, buttons: [
+            ChatButton(title: "OK", isPrimary: true) { [weak self] in self?.dismissNotification() },
+            ChatButton(title: "Dans 5 min") { [weak self] in
+                self?.snooze(notification)
+                self?.dismissNotification()
+            },
+            ChatButton(title: "Ouvrir") { [weak self] in
+                self?.openEvent(notification)
+                self?.dismissNotification()
+            },
+        ], near: spriteRect, on: screen)
+    }
+
+    private func dismissNotification() {
+        notificationWindow.hide()
+        currentNotification = nil
+        if notificationQueue.isEmpty {
+            velocity = .zero
+            silentLanding = true
+            machine.notificationDone()   // elle redescend en tombant
+        } else {
+            presentNextNotification()
+        }
+    }
+
+    private func snooze(_ notification: EventNotification) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 300) { [weak self] in self?.enqueue(notification) }
+    }
+
+    /// « Ouvrir » : le lien de visio s'il y en a un, sinon l'événement dans Calendrier.
+    private func openEvent(_ notification: EventNotification) {
+        if let link = notification.meetingLink {
+            NSWorkspace.shared.open(link)
+        } else if let id = notification.eventID?.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+                  let url = URL(string: "ical://ekevent/\(id)?method=show&options=more") {
+            NSWorkspace.shared.open(url)
+        } else if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.iCal") {
+            NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    /// Menu « Agenda des rappels » : demande l'accès si besoin.
+    func requestCalendarAccess() {
+        Task { @MainActor in
+            if await calendar.ensureAccess() { watcher.start() }
         }
     }
 

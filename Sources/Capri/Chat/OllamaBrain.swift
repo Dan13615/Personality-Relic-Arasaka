@@ -29,7 +29,9 @@ final class OllamaBrain: ChatBrain {
         return models.compactMap { $0["name"] as? String }
     }
 
-    func reply(to message: String, systemPrompt: String) -> AsyncThrowingStream<String, Error> {
+    // Note : Ollama reste « discussion seulement » pour l'instant. Pour lui donner les pouvoirs plus tard,
+    // il suffira d'envoyer `ToolRegistry.definitions` dans le champ "tools" de /api/chat.
+    func reply(to message: String, systemPrompt: String) -> AsyncThrowingStream<BrainEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 do {
@@ -46,7 +48,7 @@ final class OllamaBrain: ChatBrain {
     }
 
     private func run(message: String, systemPrompt: String,
-                     continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
+                     continuation: AsyncThrowingStream<BrainEvent, Error>.Continuation) async throws {
         let messages = [["role": "system", "content": systemPrompt]] + history + [["role": "user", "content": message]]
         var request = URLRequest(url: Self.baseURL.appendingPathComponent("api/chat"))
         request.httpMethod = "POST"
@@ -77,7 +79,7 @@ final class OllamaBrain: ChatBrain {
             if let error = json["error"] as? String { throw BrainError.ollamaUnavailable(error) }
             if let piece = (json["message"] as? [String: Any])?["content"] as? String, !piece.isEmpty {
                 full += piece
-                continuation.yield(piece)
+                continuation.yield(.text(piece))
             }
         }
         history.append(["role": "user", "content": message])
