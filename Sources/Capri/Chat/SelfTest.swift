@@ -155,3 +155,90 @@ enum UIRender {
         CGImageDestinationFinalize(destination)
     }
 }
+
+/// Tests de la partie Google qui ne demandent ni réseau ni compte :
+///
+///     Capri --google-selftest
+@MainActor
+enum GoogleSelfTest {
+    static func run() {
+        var passed = 0, failed = 0
+        func check(_ name: String, _ condition: Bool) {
+            if condition { passed += 1; print("✓ \(name)") } else { failed += 1; print("✗ \(name)") }
+        }
+
+        // PKCE : base64url(SHA-256(verifier)), valeur attendue calculée indépendamment avec Python (hashlib).
+        check("PKCE (S256)", GoogleAuth.challenge(for: "dBjftJeZ4CVP-mJ92K9qPKVqA7PXdz1fCHr9E7d6oTo") == "n8YWm0_zJRMUByclOsKJ3YGSWhYzMSaZEnA-LMJxpBY")
+        check("verifier aléatoire (43+ caractères, sans + / =)", { let v = GoogleAuth.makeVerifier(); return v.count >= 43 && !v.contains(where: "+/=".contains) }())
+
+        // Fichier client de la console Google.
+        let sample = #"{"installed":{"client_id":"123-abc.apps.googleusercontent.com","project_id":"capri","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","client_secret":"GOCSPX-test","redirect_uris":["http://localhost"]}}"#
+        let client = try? GoogleAuth.parseClient(Data(sample.utf8))
+        check("lecture du fichier client", client?.id == "123-abc.apps.googleusercontent.com" && client?.secret == "GOCSPX-test")
+        check("fichier client invalide refusé", (try? GoogleAuth.parseClient(Data(#"{"foo":1}"#.utf8))) == nil)
+
+        if let client {
+            let url = GoogleAuth.authorizationURL(client: client, redirect: "http://127.0.0.1:5555", challenge: "CH", state: "ST")
+            let items = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+            check("URL de consentement", items["redirect_uri"] == "http://127.0.0.1:5555" && items["code_challenge_method"] == "S256"
+                  && items["access_type"] == "offline" && items["scope"] == GoogleAuth.scopes.joined(separator: " "))
+        }
+        check("corps de formulaire encodé", GoogleAuth.formBody(["b": "x y&z", "a": "1/2"]) == "a=1%2F2&b=x%20y%26z")
+        check("redirection reçue", LoopbackServer.queryItems(fromRequest: "GET /?code=4%2FabC&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n") == ["code": "4/abC", "state": "xyz"])
+
+        // Google Docs : texte, entrées, recherche.
+        let document: [String: Any] = ["body": ["content": [
+            ["sectionBreak": [:]],
+            ["paragraph": ["elements": [["textRun": ["content": "Carnet de Capri — les notes que tu lui confies.\n"]]]]],
+            ["paragraph": ["elements": [["textRun": ["content": "\n📝 dimanche 8 novembre 2026, 11 h 02 — Courses\n"]]]]],
+            ["paragraph": ["elements": [["textRun": ["content": "Acheter du café "]], ["textRun": ["content": "et des pâtes\n"]]]]],
+            ["paragraph": ["elements": [["textRun": ["content": "\n📝 lundi 9 novembre 2026, 9 h 00 — Idée\nUn mode nuit pour Capri\n"]]]]],
+        ]]]
+        let text = GoogleFormat.documentText(document)
+        check("texte du document", text.contains("Acheter du café et des pâtes"))
+        let entries = GoogleFormat.entries(in: text)
+        check("découpage en entrées", entries.count == 2 && entries[0].hasPrefix("📝 dimanche"))
+        check("recherche sans accents", GoogleFormat.matching(entries, query: "PATES cafe").count == 1)
+        let entry = GoogleFormat.entry(text: " Test ", title: "Titre", date: Date(timeIntervalSince1970: 1_778_230_800))
+        check("format d'une entrée", entry.hasPrefix("\n📝 ") && entry.contains("— Titre\nTest\n"))
+        let append = GoogleFormat.appendRequest("abc")
+        check("requête d'ajout Docs (JSON valide)", JSONSerialization.isValidJSONObject(append)
+              && ((append["requests"] as? [[String: Any]])?.first?["insertText"] as? [String: Any])?["endOfSegmentLocation"] != nil)
+
+        // Google Tasks.
+        check("échéance (date seule)", GoogleFormat.taskDue("2026-11-12") == "2026-11-12T00:00:00.000Z")
+        check("échéance depuis une date ISO", GoogleFormat.taskDue("2026-11-12T14:30:00+01:00") == "2026-11-12T00:00:00.000Z")
+        check("échéance invalide refusée", GoogleFormat.taskDue("demain") == nil)
+        let line = GoogleFormat.taskLine(["id": "T1", "title": "Appeler Léa", "due": "2026-11-12T00:00:00.000Z", "notes": "pour samedi"])
+        check("ligne de tâche", line == "- Appeler Léa — pour le 2026-11-12 — pour samedi [id : T1]")
+
+        // Les outils : présents dans le registre, schémas JSON valides.
+        let registry = ToolRegistry()
+        let api = GoogleAPI(auth: GoogleAuth())
+        registry.register(GoogleTools.all(api: api, notesDocument: { nil }, saveNotesDocument: { _ in }))
+        let names = registry.definitions.compactMap { $0["name"] as? String }
+        check("5 outils Google", names == ["add_note", "read_notes", "create_task", "list_tasks", "complete_task"])
+        check("schémas JSON valides", registry.definitions.allSatisfy { JSONSerialization.isValidJSONObject($0) })
+
+        // Le mini serveur de redirection, pour de vrai : une requête HTTP locale.
+        Task { @MainActor in
+            do {
+                let server = try LoopbackServer()
+                let port = server.port
+                Task.detached {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    _ = try? await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/?code=XYZ&state=S1")!)
+                }
+                let query = try await server.waitForRedirect(timeout: 5)
+                check("serveur de redirection (port \(port))", query == ["code": "XYZ", "state": "S1"])
+            } catch {
+                check("serveur de redirection", false)
+            }
+            // Sans connexion, un outil répond par un échec clair (pas de plantage).
+            let result = await registry.call("list_tasks", arguments: [:])
+            check("sans connexion : échec lisible", result.isError && result.text.contains("Connecter Google"))
+            print("\n\(passed) réussis, \(failed) échoués")
+            exit(failed == 0 ? 0 : 1)
+        }
+    }
+}

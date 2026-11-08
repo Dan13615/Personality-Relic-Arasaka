@@ -130,6 +130,7 @@ Envoie les messages au cerveau, dans une même conversation, et affiche l'humeur
 les temps de réponse, sans interface. `--render-ui <dossier>` dessine les bulles en PNG, et
 `--open-chat "message"` ouvre la bulle et envoie un message au lancement.
 Quand Capri.app tourne, `--selftest` passe par elle : les tests utilisent donc ses vrais pouvoirs.
+`--google-selftest` vérifie la partie Google sans compte ni réseau (PKCE, lecture des JSON…).
 
 ## Ses pouvoirs (étape 3)
 
@@ -185,6 +186,19 @@ les deux sens : un rappel créé par Capri arrive dans Google Agenda, donc ton t
   désactive les notifications. Ton téléphone, lui, sonnera toujours.
 
 Les phrases de ses notifications sont dans `LocalLines.swift` (pas d'IA : instantané et fiable).
+
+### Son carnet et ta liste de tâches (Google)
+
+- **Carnet de Capri** : un Google Doc dans ton Drive, créé à la première note. « Note que le code
+  du portail est 4521 », « qu'est-ce que j'avais noté sur Orion ? ». Chaque note est datée.
+- **Google Tasks** : « ajoute acheter du café à ma liste », « qu'est-ce qui me reste à faire ? »,
+  « c'est fait pour le café ». L'échéance est une date seulement (Google Tasks ignore l'heure) :
+  pour une heure précise, elle crée plutôt un rappel dans l'agenda.
+
+Il faut le connecter une fois : crée un « client OAuth » Google en suivant
+[docs/google-setup.md](docs/google-setup.md), puis menu de Capri → « Connecter Google… ». Capri ne
+voit dans ton Drive QUE les fichiers qu'elle a créés elle-même (autorisation `drive.file`). Le jeton
+de connexion est rangé dans ton Trousseau macOS.
 
 ### Les autorisations macOS
 
@@ -250,7 +264,9 @@ Capri/
     │   ├── FileTools.swift       # fichiers (lecture seule) + FileGuard
     │   ├── Browser.swift         # son navigateur (WKWebView) + outils web
     │   ├── Calendar.swift        # agenda (EventKit) + outils de rappels
-    │   └── EventWatcher.swift    # surveille l'agenda et déclenche ses notifications
+    │   ├── EventWatcher.swift    # surveille l'agenda et déclenche ses notifications
+    │   ├── GoogleAuth.swift      # connexion Google (OAuth + PKCE, jeton dans le Trousseau)
+    │   └── GoogleTools.swift     # Carnet de Capri (Google Docs) et Google Tasks
     └── Resources/Sprites/*.png   # les sprites découpés
 Persona/capri.md                  # SA PERSONNALITÉ (modifiable sans recompiler)
 ```

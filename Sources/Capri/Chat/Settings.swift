@@ -29,6 +29,8 @@ struct CapriSettings: Codable {
     var notifyAllDayEvents: Bool = false
     /// Son joué avec une notification (nom d'un son système, ex. "Glass", "Tink" ; "" = aucun).
     var notificationSound: String = "Glass"
+    /// Identifiant du Google Doc « Carnet de Capri » (créé à la première note).
+    var notesDocumentID: String?
 
     // Lecture tolérante : un réglage absent du fichier garde sa valeur par défaut.
     init() {}
@@ -47,6 +49,7 @@ struct CapriSettings: Codable {
         notifyMinutesBefore = try c.decodeIfPresent(Int.self, forKey: .notifyMinutesBefore) ?? d.notifyMinutesBefore
         notifyAllDayEvents = try c.decodeIfPresent(Bool.self, forKey: .notifyAllDayEvents) ?? d.notifyAllDayEvents
         notificationSound = try c.decodeIfPresent(String.self, forKey: .notificationSound) ?? d.notificationSound
+        notesDocumentID = try c.decodeIfPresent(String.self, forKey: .notesDocumentID)
     }
 
     // MARK: Fichiers

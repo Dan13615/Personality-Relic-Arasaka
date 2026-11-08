@@ -33,6 +33,10 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
     private(set) lazy var calendar = CalendarService { [unowned self] in self.settings }
     private lazy var watcher = EventWatcher(calendar: calendar)
     let browser = BrowserWindowController()
+    let googleAuth = GoogleAuth()
+    private lazy var googleAPI = GoogleAPI(auth: googleAuth)
+    /// Vrai pendant la connexion à Google (le menu l'affiche).
+    private(set) var isConnectingGoogle = false
     private var toolServer: ToolSocketServer?
     private let notificationWindow = NotificationWindowController()
     private var notificationQueue: [EventNotification] = []
@@ -513,6 +517,12 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             self?.watcher.start()
             self?.watcher.refresh()
         })
+        registry.register(GoogleTools.all(api: googleAPI,
+                                          notesDocument: { [unowned self] in self.settings.notesDocumentID },
+                                          saveNotesDocument: { [weak self] id in
+                                              self?.settings.notesDocumentID = id
+                                              self?.settings.save()
+                                          }))
         browser.model.searchURL = { [unowned self] in self.settings.searchURL }
         calendar.saveCalendarID = { [weak self] id in
             self?.settings.reminderCalendarID = id
@@ -658,6 +668,27 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         } else if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.iCal") {
             NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
         }
+    }
+
+    /// Menu « Connecter Google… » : ouvre la page de consentement dans le navigateur habituel.
+    func connectGoogle() {
+        guard !isConnectingGoogle else { return }
+        isConnectingGoogle = true
+        Task { @MainActor in
+            defer { isConnectingGoogle = false }
+            do {
+                try await googleAuth.connect()
+                speech.say("Okie-dokie, je suis branchée sur ton Google ! Mon carnet et ta liste de tâches sont à moi. Enfin, à nous.",
+                           above: spriteRect, on: screen, duration: 5)
+            } catch {
+                speech.say("Raté pour Google : \(error.localizedDescription)", above: spriteRect, on: screen, duration: 7)
+                log.error("Connexion Google : \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    func disconnectGoogle() {
+        googleAuth.disconnect()
     }
 
     /// Menu « Agenda des rappels » : demande l'accès si besoin.
