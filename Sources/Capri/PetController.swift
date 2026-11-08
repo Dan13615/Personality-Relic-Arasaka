@@ -291,9 +291,10 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
     private func updateRendering() {
         let fps: Int
         switch machine.state {
-        case .dragged, .falling, .teleporting, .appearing, .reacting, .peeking: fps = 60
-        case .floating, .playing: fps = 30
-        default: fps = 20
+        case .dragged, .falling, .teleporting, .appearing, .reacting: fps = 60
+        case .floating, .playing, .peeking: fps = 30
+        case .hacking: fps = 20      // les petits rebonds de frappe sont rapides
+        default: fps = 12            // assise, accoudée… : la respiration n'a pas besoin de plus
         }
         view.preferredFramesPerSecond = fps
         let paused = sleepRenderingPaused || isOccluded
