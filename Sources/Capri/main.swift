@@ -61,6 +61,10 @@ MainActor.assumeIsolated {
     if arguments.contains("--mcp-server") {
         MCPServer.run()
     }
+    if arguments.contains("--google-selftest") {
+        GoogleSelfTest.run()
+        dispatchMain()
+    }
     if let index = arguments.firstIndex(of: "--selftest") {
         SelfTest.run(messages: Array(arguments[(index + 1)...]))
         dispatchMain()   // fait tourner la boucle principale ; SelfTest quitte à la fin

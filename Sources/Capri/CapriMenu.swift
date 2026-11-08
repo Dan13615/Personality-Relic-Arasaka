@@ -66,6 +66,7 @@ final class CapriMenu: NSObject, NSMenuDelegate {
         let calendarItem = NSMenuItem(title: "Agenda des rappels", action: nil, keyEquivalent: "")
         calendarItem.submenu = calendarMenu()
         menu.addItem(calendarItem)
+        addGoogleItems(to: menu)
         menu.addItem(.separator())
 
         let calmTitle = controller.machine.isCalm ? "Reprendre" : "Rester tranquille"
@@ -87,6 +88,40 @@ final class CapriMenu: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(item("Quitter Capri", #selector(quit), key: "q"))
+    }
+
+    /// Google (Carnet + Tasks) : l'état de la connexion, en clair.
+    private func addGoogleItems(to menu: NSMenu) {
+        let auth = controller.googleAuth
+        let status: NSMenuItem
+        if controller.isConnectingGoogle {
+            status = NSMenuItem(title: "Google : connexion en cours (regarde ton navigateur)…", action: nil, keyEquivalent: "")
+            status.isEnabled = false
+        } else if auth.isConnected {
+            status = NSMenuItem(title: "Google : connecté ✓", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            sub.addItem(item("Déconnecter Google", #selector(disconnectGoogle)))
+            status.submenu = sub
+        } else {
+            do {
+                _ = try GoogleAuth.loadClient()
+                status = item("Connecter Google…", #selector(connectGoogle))
+            } catch let error as GoogleAuth.AuthError {
+                // Fichier client absent ou illisible : on le dit clairement, sans bouton qui ne mènerait à rien.
+                if case .noClientFile = error {
+                    status = NSMenuItem(title: "Google : fichier google-oauth-client.json manquant", action: nil, keyEquivalent: "")
+                } else {
+                    status = NSMenuItem(title: "Google : fichier google-oauth-client.json illisible", action: nil, keyEquivalent: "")
+                }
+                status.isEnabled = false
+                menu.addItem(status)
+                menu.addItem(item("   Ouvrir le dossier de Capri…", #selector(openSupportFolder)))
+                return
+            } catch {
+                return
+            }
+        }
+        menu.addItem(status)
     }
 
     /// Les agendas où Capri peut écrire ; celui des rappels est coché.
@@ -129,6 +164,9 @@ final class CapriMenu: NSObject, NSMenuDelegate {
 
     @objc private func toggleChat() { controller.toggleChat() }
     @objc private func openBrowser() { controller.browser.show() }
+    @objc private func connectGoogle() { controller.connectGoogle() }
+    @objc private func disconnectGoogle() { controller.disconnectGoogle() }
+    @objc private func openSupportFolder() { NSWorkspace.shared.open(CapriSettings.supportDirectory) }
     @objc private func requestCalendarAccess() { controller.requestCalendarAccess() }
 
     @objc private func chooseCalendar(_ sender: NSMenuItem) {
