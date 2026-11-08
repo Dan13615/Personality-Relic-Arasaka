@@ -18,7 +18,9 @@ enum PetState: Equatable {
     case reacting(Pose)                 // courte réaction : clic, caresse, réveil…
     case dragged(shaking: Bool)         // tenue par la souris
     case falling                        // lâchée : elle tombe jusqu'au sol
-    // Étape 2 : on ajoutera ici `.thinking` (pose hacking) et `.emoting(Emotion)`.
+    case chatting                       // la bulle de discussion est ouverte : elle écoute
+    case thinking                       // elle prépare sa réponse (tape sur son ordi)
+    case emoting(Pose)                  // elle répond, dans la pose de son humeur
 
     /// La pose à afficher pour cet état.
     var pose: Pose {
@@ -36,6 +38,9 @@ enum PetState: Equatable {
         case .reacting(let pose): return pose
         case .dragged(let shaking): return shaking ? .struggle : .pull
         case .falling: return .pull
+        case .chatting: return .sitCurious
+        case .thinking: return .hacking
+        case .emoting(let pose): return pose
         }
     }
 }
@@ -75,6 +80,8 @@ final class BehaviorMachine {
     private(set) var isCalm = false
     /// « Dormir » choisi dans le menu : elle ne se réveille pas juste parce que la souris bouge.
     private(set) var isForcedSleep = false
+    /// La bulle de discussion est ouverte : elle reste sur place, à côté.
+    private(set) var isChatOpen = false
 
     private var lastActivity: Activity?
     private var pokeTimes: [TimeInterval] = []
@@ -103,6 +110,11 @@ final class BehaviorMachine {
     }
 
     private func chooseNextActivity() {
+        // Pendant une discussion, elle ne part pas se balader : elle revient écouter.
+        if isChatOpen {
+            transition(to: .chatting, duration: nil)
+            return
+        }
         let candidates = Activity.allCases.filter { activity in
             (!isCalm || activity.staysInPlace) && activity != lastActivity
         }
@@ -148,18 +160,29 @@ final class BehaviorMachine {
 
     // MARK: - Interactions
 
-    /// Clic simple. 3 clics ou plus en 2 secondes : elle se débat.
-    func poke() {
-        guard !isHeld else { return }
-        isForcedSleep = false
+    /// Note un clic. Renvoie vrai au 3e clic rapide (en moins de 2 s) : elle se débat, c'est l'easter egg.
+    func registerClick() -> Bool {
         pokeTimes = pokeTimes.filter { now - $0 < 2 } + [now]
-        let pose: Pose = pokeTimes.count >= 3 ? .struggle : .confused
-        transition(to: .reacting(pose), duration: 1.5)
+        guard pokeTimes.count >= 3 else { return false }
+        pokeTimes.removeAll()
+        if !isHeld {
+            isForcedSleep = false
+            transition(to: .reacting(.struggle), duration: 1.5)
+        }
+        return true
+    }
+
+    /// Est-elle en pleine réponse ? On ne l'interrompt pas pour une caresse.
+    private var isAnswering: Bool {
+        switch state {
+        case .thinking, .emoting: return true
+        default: return false
+        }
     }
 
     /// Caresse (va-et-vient de la souris sur elle).
     func pet() {
-        guard !isHeld, state != .sleeping else { return }
+        guard !isHeld, !isAnswering, state != .sleeping else { return }
         if state == .reacting(.love) {
             stateEndsAt = now + 2   // on prolonge, sans relancer l'animation
         } else {
@@ -189,7 +212,7 @@ final class BehaviorMachine {
 
     /// L'utilisateur n'a rien touché depuis ~3 minutes.
     func userBecameIdle() {
-        guard !isHeld, state != .sleeping else { return }
+        guard !isHeld, !isChatOpen, state != .sleeping else { return }
         transition(to: .sleeping, duration: nil)
     }
 
@@ -209,6 +232,42 @@ final class BehaviorMachine {
         isForcedSleep = false
         if state == .sleeping { transition(to: .reacting(.sitCurious), duration: 1.5) }
     }
+
+    // MARK: - Discussion
+
+    func chatOpened() {
+        isChatOpen = true
+        isForcedSleep = false
+        if !isHeld && !isAnswering { transition(to: .chatting, duration: nil) }
+    }
+
+    func chatClosed() {
+        isChatOpen = false
+        if state == .chatting { chooseNextActivity() }
+    }
+
+    /// Message envoyé : elle réfléchit (pose hacking) en attendant les premiers mots.
+    func startThinking() {
+        guard !isHeld else { return }
+        transition(to: .thinking, duration: nil)
+    }
+
+    /// Les premiers mots arrivent avec une humeur : on prend la pose correspondante.
+    func emote(_ pose: Pose) {
+        guard !isHeld else { return }
+        transition(to: .emoting(pose), duration: nil)
+    }
+
+    /// Réponse terminée : elle garde la pose de son humeur encore 6 à 8 secondes.
+    func replyEnded() {
+        switch state {
+        case .emoting: stateEndsAt = now + .random(in: 6...8)
+        case .thinking: chooseNextActivity()
+        default: break
+        }
+    }
+
+    // MARK: - Menu
 
     func setCalm(_ calm: Bool) {
         isCalm = calm

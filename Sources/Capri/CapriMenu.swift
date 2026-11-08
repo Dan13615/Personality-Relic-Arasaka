@@ -29,16 +29,37 @@ final class CapriMenu: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         fill(menu)
+        controller.refreshOllama()   // pour la prochaine ouverture
     }
 
     private func fill(_ menu: NSMenu) {
         menu.removeAllItems()
         menu.autoenablesItems = false
 
-        // Étape 2 : ouvrira la discussion avec Capri.
-        let chat = NSMenuItem(title: "Discuter (bientôt)", action: nil, keyEquivalent: "")
-        chat.isEnabled = false
+        // Discuter, avec le raccourci global affiché à droite (⌃⌥C).
+        let chat = item(controller.chat.isOpen ? "Fermer la discussion" : "Discuter", #selector(toggleChat), key: "c")
+        chat.keyEquivalentModifierMask = [.control, .option]
         menu.addItem(chat)
+        menu.addItem(item("Nouvelle conversation", #selector(newConversation)))
+
+        let brainItem = NSMenuItem(title: "Cerveau", action: nil, keyEquivalent: "")
+        let brainMenu = NSMenu()
+        brainMenu.autoenablesItems = false
+        let claude = item("Claude (\(controller.settings.claudeModel))", #selector(chooseBrain(_:)))
+        claude.representedObject = "claude"
+        claude.state = controller.activeBrain is ClaudeBrain ? .on : .off
+        brainMenu.addItem(claude)
+        let ollamaInstalled = controller.ollamaModels != nil
+        let ollama = item(ollamaInstalled ? "Ollama (\(controller.settings.ollamaModel))" : "Ollama (non installé)",
+                          #selector(chooseBrain(_:)))
+        ollama.representedObject = "ollama"
+        ollama.isEnabled = ollamaInstalled
+        ollama.state = controller.activeBrain is OllamaBrain ? .on : .off
+        brainMenu.addItem(ollama)
+        brainItem.submenu = brainMenu
+        menu.addItem(brainItem)
+
+        menu.addItem(item("Modifier sa personnalité…", #selector(editPersona)))
         menu.addItem(.separator())
 
         let calmTitle = controller.machine.isCalm ? "Reprendre" : "Rester tranquille"
@@ -68,7 +89,15 @@ final class CapriMenu: NSObject, NSMenuDelegate {
         return item
     }
 
+    @objc private func toggleChat() { controller.toggleChat() }
+    @objc private func newConversation() { controller.newConversation() }
+    @objc private func editPersona() { controller.editPersona() }
     @objc private func toggleCalm() { controller.toggleCalm() }
+
+    @objc private func chooseBrain(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        controller.setBrain(name)
+    }
     @objc private func toggleSleep() { controller.toggleSleep() }
     @objc private func quit() { NSApp.terminate(nil) }
 

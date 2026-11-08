@@ -18,6 +18,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Capri" "$APP/Contents/MacOS/Capri"
 # Le bundle de ressources (les sprites) créé par SwiftPM, rangé dans Contents/Resources.
 cp -R "$BIN_DIR/Capri_Capri.bundle" "$APP/Contents/Resources/"
+# Copie de secours de sa personnalité (l'app lit en priorité Persona/capri.md du projet).
+cp Persona/capri.md "$APP/Contents/Resources/capri.md"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,6 +37,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key>    <true/>
     <!-- Pas d'icône dans le Dock : Capri vit sur le bureau et dans la barre des menus. -->
     <key>LSUIElement</key>                <true/>
+    <!-- Où est le projet : l'app y relit Persona/capri.md à chaque message. -->
+    <key>CapriProjectPath</key>           <string>$(pwd)</string>
 </dict>
 </plist>
 PLIST

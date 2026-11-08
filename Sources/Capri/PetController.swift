@@ -17,6 +17,17 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
     private let mouseWatcher: MouseWatcher
     private let idleWatcher = IdleWatcher()
 
+    // MARK: Discussion (étape 2)
+    private(set) var settings = CapriSettings.load()
+    private lazy var claudeBrain = ClaudeBrain(settings: settings)
+    private lazy var ollamaBrain = OllamaBrain(settings: settings)
+    /// Modèles Ollama installés, ou `nil` si Ollama ne répond pas (pas installé ou pas lancé).
+    private(set) var ollamaModels: [String]?
+    private(set) lazy var chat = ChatWindowController(model: ChatModel { [unowned self] in self.activeBrain },
+                                                      brainName: { [unowned self] in self.activeBrain.displayName })
+    private let speech = SpeechBubbleController()
+    private var hotKey: HotKey?
+
     /// Fournit le menu (clic droit). C'est `CapriMenu` qui le construit.
     var menuProvider: (() -> NSMenu)?
 
@@ -81,6 +92,14 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
     private func moveWindow() {
         panel.setFrameOrigin(CGPoint(x: (feet.x - windowSize.width / 2).rounded(), y: feet.y.rounded()))
+        // Les bulles suivent Capri quand elle bouge (par exemple quand on la traîne).
+        if chat.isOpen { chat.place(near: spriteRect, on: screen) }
+        speech.follow(sprite: spriteRect, on: screen)
+    }
+
+    /// Le rectangle du sprite à l'écran : sert à placer les bulles.
+    private var spriteRect: CGRect {
+        CGRect(x: feet.x - spriteSize.width / 2, y: feet.y, width: spriteSize.width, height: spriteSize.height)
     }
 
     private func applySize() {
@@ -117,14 +136,15 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
         mouseWatcher.isOverCapri = { [weak self] point in self?.isOverCapri(point) ?? false }
         mouseWatcher.isMouseHeld = { [weak self] in self?.isMouseDown ?? false }
-        mouseWatcher.onPet = { [weak self] in self?.machine.pet() }
+        mouseWatcher.onPet = { [weak self] in self?.pet() }
         mouseWatcher.start()
 
         idleWatcher.onIdle = { [weak self] in self?.machine.userBecameIdle() }
-        idleWatcher.onActive = { [weak self] in self?.machine.userBecameActive() }
+        idleWatcher.onActive = { [weak self] in self?.userCameBack() }
         idleWatcher.start()
 
         observeSystem()
+        setUpChat()
         machine.start()
         log.notice("Capri démarrée (taille \(self.size.rawValue, privacy: .public))")
     }
@@ -224,11 +244,39 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         case .dragged(let shaking):
             scene.show(shaking ? .struggle : .pull, facingRight: facingRight)
             scene.play(shaking ? .shake : .dangle)
+            if shaking { say(.shaken) }
 
         case .falling:
             scene.play(.dangle)
+
+        case .chatting:
+            scene.show(.sitCurious, facingRight: facingRight)
+            scene.play(.sway)
+
+        case .thinking:
+            scene.show(.hacking, facingRight: facingRight)
+            scene.play(.typing)
+
+        case .emoting(let pose):
+            scene.show(pose, facingRight: facingRight)
+            scene.play(ambient(for: pose))
+            if pose == .love { scene.emitHearts(count: 5) }
         }
         updateRendering()
+    }
+
+    /// L'animation d'ambiance qui va avec une pose (pour les poses d'humeur).
+    private func ambient(for pose: Pose) -> Ambient {
+        switch pose {
+        case .juggle: return .hops
+        case .struggle: return .shake
+        case .sleepy: return .sleep
+        case .hacking: return .typing
+        case .float: return .bob
+        case .handstand: return .wobble
+        case .lounge, .confused, .love, .peek: return .still
+        case .sitSwing, .sitCurious, .pull: return .sway
+        }
     }
 
     // MARK: - Boucle d'animation
@@ -280,6 +328,7 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             moveWindow()
             machine.landed()          // nouvel état d'abord (il remet les effets à zéro)…
             scene.landingSquash()     // …puis l'écrasement par-dessus
+            say(.dropped)
         } else {
             moveWindow()
         }
@@ -292,8 +341,8 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         let fps: Int
         switch machine.state {
         case .dragged, .falling, .teleporting, .appearing, .reacting: fps = 60
-        case .floating, .playing, .peeking: fps = 30
-        case .hacking: fps = 20      // les petits rebonds de frappe sont rapides
+        case .floating, .playing, .peeking, .emoting: fps = 30
+        case .hacking, .thinking: fps = 20      // les petits rebonds de frappe sont rapides
         default: fps = 12            // assise, accoudée… : la respiration n'a pas besoin de plus
         }
         view.preferredFramesPerSecond = fps
@@ -348,10 +397,86 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         }
     }
 
-    /// LE point d'entrée d'un clic simple sur Capri.
-    /// À l'étape 2, c'est ici qu'on ouvrira la bulle de discussion.
+    /// LE point d'entrée d'un clic simple sur Capri : il ouvre ou ferme la discussion.
     private func handleClick() {
-        machine.poke()
+        // Easter egg : 3 clics rapides, elle se débat (et la bulle ne bouge pas).
+        if machine.registerClick() { return }
+        toggleChat()
+        scene.hop()   // petite réaction, après le changement d'état (qui remet les effets à zéro)
+    }
+
+    // MARK: - Discussion
+
+    private func setUpChat() {
+        chat.model.onThinking = { [weak self] in self?.machine.startThinking() }
+        chat.model.onMood = { [weak self] mood in self?.machine.emote(mood.pose) }
+        chat.model.onReplyEnded = { [weak self] in self?.machine.replyEnded() }
+        chat.onClose = { [weak self] in self?.machine.chatClosed() }
+        hotKey = HotKey { [weak self] in self?.toggleChat() }
+        refreshOllama()
+    }
+
+    func toggleChat() {
+        if chat.isOpen {
+            chat.close()
+        } else {
+            speech.hide()
+            machine.chatOpened()
+            chat.open(near: spriteRect, on: screen)
+        }
+    }
+
+    func newConversation() {
+        chat.model.newConversation()
+    }
+
+    /// Le cerveau utilisé : Ollama seulement s'il est choisi ET disponible, sinon Claude.
+    var activeBrain: ChatBrain {
+        settings.brain == "ollama" && ollamaModels != nil ? ollamaBrain : claudeBrain
+    }
+
+    func setBrain(_ name: String) {
+        settings.brain = name
+        settings.save()
+        chat.rebuildContent()
+    }
+
+    /// Vérifie en arrière-plan si Ollama tourne (pour le menu « Cerveau »).
+    func refreshOllama() {
+        Task { @MainActor in
+            ollamaModels = await OllamaBrain.installedModels()
+        }
+    }
+
+    /// Ouvre Persona/capri.md dans TextEdit.
+    func editPersona() {
+        guard let url = Persona.fileURL else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        if let textEdit = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") {
+            NSWorkspace.shared.open([url], withApplicationAt: textEdit, configuration: configuration)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - Petites répliques
+
+    /// Affiche une réplique « maison » au-dessus d'elle (pas pendant une discussion).
+    private func say(_ event: LocalLines.Event) {
+        guard !chat.isOpen else { return }
+        speech.say(LocalLines.random(for: event), above: spriteRect, on: screen)
+    }
+
+    private func pet() {
+        let before = machine.state
+        machine.pet()
+        if machine.state == .reacting(.love) && before != .reacting(.love) { say(.petted) }
+    }
+
+    private func userCameBack() {
+        guard machine.state == .sleeping, !machine.isForcedSleep else { return }
+        machine.userBecameActive()
+        say(.wokeUp)
     }
 
     /// Secouée = au moins 2 changements de direction rapides dans la dernière demi-seconde.
@@ -393,13 +518,19 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
     }
 
     func toggleSleep() {
-        if machine.state == .sleeping { machine.wakeUp() } else { machine.sleepNow() }
+        if machine.state == .sleeping {
+            machine.wakeUp()
+            say(.wokeUp)
+        } else {
+            machine.sleepNow()
+        }
     }
 
     func setSize(_ newSize: PetSize) {
         size = newSize
         PetSize.saved = newSize
         applySize()
+        if chat.isOpen { chat.place(near: spriteRect, on: screen) }
     }
 
     // MARK: - Événements système
