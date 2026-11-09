@@ -52,24 +52,27 @@ final class ClaudeBrain: ChatBrain {
             "--include-partial-messages",        // les morceaux de texte au fur et à mesure
             "--system-prompt", systemPrompt,     // SA personnalité remplace le prompt par défaut
             "--system-prompt-snapshot", "off",   // relit le prompt à chaque message (date, heure, persona modifiée)
-            "--strict-mcp-config",               // aucun autre serveur MCP que le sien
             "--setting-sources", "",             // ni tes réglages ni ceux d'un projet
             "--disable-slash-commands",
             "--model", settings.claudeModel,
         ]
         if withPowers {
             args += [
-                // Outils intégrés de Claude Code : SEULEMENT la recherche et la lecture web.
+                // Outils intégrés de Claude Code : SEULEMENT la recherche et la lecture web, plus ToolSearch
+                // (qui sert à trouver les outils des connecteurs, chargés à la demande).
                 // Pas de Bash, Read, Write… : ils contourneraient les règles de dossiers de Capri.
-                "--tools", "WebSearch,WebFetch",
-                // Ses pouvoirs à elle, via notre serveur MCP « capri ».
+                "--tools", "WebSearch,WebFetch,ToolSearch",
+                // Ses pouvoirs à elle, via notre serveur MCP « capri ». Pas de --strict-mcp-config :
+                // il exclurait les connecteurs claude.ai (Gmail, Drive, Slack…) de ton compte.
+                // (--setting-sources "" plus haut écarte quand même tes réglages et serveurs locaux.)
                 "--mcp-config", mcpConfig,
-                // Autorisés sans question ; tout le reste est refusé d'office (dontAsk).
-                "--allowedTools", "mcp__capri,WebSearch,WebFetch",
-                "--permission-mode", "dontAsk",
+                // Autorisés d'office : ses propres outils et le web.
+                "--allowedTools", "mcp__capri,WebSearch,WebFetch,ToolSearch",
+                // Tout le reste (les connecteurs) demande à notre portier, qui décide ou te demande.
+                "--permission-prompt-tool", "mcp__capri__approve",
             ]
         } else {
-            args += ["--tools", ""]   // discussion seule
+            args += ["--tools", "", "--strict-mcp-config"]   // discussion seule
         }
         if let sessionID {
             args += ["--resume", sessionID]

@@ -66,7 +66,14 @@ MainActor.assumeIsolated {
         dispatchMain()
     }
     if let index = arguments.firstIndex(of: "--selftest") {
-        SelfTest.run(messages: Array(arguments[(index + 1)...]))
+        // `--answers "Refuser,Autoriser une fois"` : réponses aux demandes d'autorisation, dans l'ordre.
+        var messages = Array(arguments[(index + 1)...])
+        var answers: [String]?
+        if let a = messages.firstIndex(of: "--answers"), a + 1 < messages.count {
+            answers = messages[a + 1].components(separatedBy: ",")
+            messages.removeSubrange(a...(a + 1))
+        }
+        SelfTest.run(messages: messages, answers: answers)
         dispatchMain()   // fait tourner la boucle principale ; SelfTest quitte à la fin
     }
     // Mode caché : `Capri --render-ui dossier`, dessine les bulles en PNG pour vérifier leur look.

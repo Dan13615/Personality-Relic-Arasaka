@@ -67,6 +67,9 @@ final class CapriMenu: NSObject, NSMenuDelegate {
         calendarItem.submenu = calendarMenu()
         menu.addItem(calendarItem)
         addGoogleItems(to: menu)
+        let permissions = NSMenuItem(title: "Autorisations…", action: nil, keyEquivalent: "")
+        permissions.submenu = permissionsMenu()
+        menu.addItem(permissions)
         menu.addItem(.separator())
 
         let calmTitle = controller.machine.isCalm ? "Reprendre" : "Rester tranquille"
@@ -88,6 +91,33 @@ final class CapriMenu: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(item("Quitter Capri", #selector(quit), key: "q"))
+    }
+
+    /// Les outils de connecteurs autorisés « toujours ». Cliquer sur l'un d'eux le retire.
+    private func permissionsMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let always = controller.settings.connectorAlways
+        if always.isEmpty {
+            let empty = NSMenuItem(title: "Aucune autorisation permanente", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            let hint = NSMenuItem(title: "Clique pour retirer :", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+            for name in always {
+                let (service, action) = ConnectorGate.parse(name)
+                let entry = item("✓ \(service) · \(action.replacingOccurrences(of: "_", with: " "))", #selector(revokeConnector(_:)))
+                entry.representedObject = name
+                menu.addItem(entry)
+            }
+        }
+        return menu
+    }
+
+    @objc private func revokeConnector(_ sender: NSMenuItem) {
+        if let name = sender.representedObject as? String { controller.revokeConnector(name) }
     }
 
     /// Google (Carnet + Tasks) : l'état de la connexion, en clair.
