@@ -161,6 +161,7 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         idleWatcher.start()
 
         observeSystem()
+        startHeartbeat()
         setUpChat()
         setUpPowers()
         machine.start()
@@ -438,8 +439,11 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
     /// LE point d'entrée d'un clic simple sur Capri : il ouvre ou ferme la discussion.
     private func handleClick() {
-        // Pendant une notification, on répond avec les boutons de la bulle.
-        if machine.state == .notifying { return }
+        // Pendant une notification, un clic sur elle vaut « OK » (avant, il était ignoré : elle pouvait rester bloquée).
+        if machine.state == .notifying {
+            dismissNotification(reason: "clic sur Capri")
+            return
+        }
         // Easter egg : 3 clics rapides, elle se débat (et la bulle ne bouge pas).
         if machine.registerClick() { return }
         toggleChat()
@@ -615,6 +619,8 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
     /// Présente la notification suivante, une à la fois.
     private func presentNextNotification() {
+        // On oublie les notifications périmées (événement commencé depuis plus de 15 min, par exemple pendant la nuit).
+        notificationQueue.removeAll { Date().timeIntervalSince($0.start) > 15 * 60 }
         guard currentNotification == nil, !isDragging, !notificationQueue.isEmpty else { return }
         if case .falling = machine.state { return }   // on attend l'atterrissage
         currentNotification = notificationQueue.removeFirst()
@@ -630,19 +636,27 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         guard let notification = currentNotification else { return }
         let time = notification.isAllDay ? "aujourd'hui" : "à " + CalendarService.french(notification.start, withDay: false)
         notificationWindow.show(text: LocalLines.notification(notification), time: time, buttons: [
-            ChatButton(title: "OK", isPrimary: true) { [weak self] in self?.dismissNotification() },
+            ChatButton(title: "OK", isPrimary: true) { [weak self] in self?.dismissNotification(reason: "OK") },
             ChatButton(title: "Dans 5 min") { [weak self] in
                 self?.snooze(notification)
-                self?.dismissNotification()
+                self?.dismissNotification(reason: "dans 5 min")
             },
             ChatButton(title: "Ouvrir") { [weak self] in
                 self?.openEvent(notification)
-                self?.dismissNotification()
+                self?.dismissNotification(reason: "ouvrir")
             },
         ], near: spriteRect, on: screen)
+        // Sans réponse au bout de 10 minutes (tu n'es pas là), elle range la bulle et reprend sa vie.
+        let key = notification.key
+        DispatchQueue.main.asyncAfter(deadline: .now() + 600) { [weak self] in
+            guard let self, self.currentNotification?.key == key else { return }
+            self.dismissNotification(reason: "sans réponse depuis 10 min")
+        }
     }
 
-    private func dismissNotification() {
+    private func dismissNotification(reason: String) {
+        guard currentNotification != nil || machine.state == .notifying else { return }
+        log.notice("Notification fermée : \(self.currentNotification?.title ?? "?", privacy: .public) (\(reason, privacy: .public))")
         notificationWindow.hide()
         currentNotification = nil
         if notificationQueue.isEmpty {
@@ -785,6 +799,7 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.isOccluded = !self.panel.occlusionState.contains(.visible)
+                log.notice("Fenêtre \(self.isOccluded ? "cachée" : "visible", privacy: .public) (état : \(String(describing: self.machine.state), privacy: .public))")
                 self.updateRendering()
             }
         }
@@ -793,15 +808,68 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             MainActor.assumeIsolated { self?.isOccluded = true; self?.updateRendering() }
         }
         workspace.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.isOccluded = false; self?.updateRendering() }
+            MainActor.assumeIsolated {
+                log.notice("Écrans réveillés")
+                self?.isOccluded = false
+                self?.updateRendering()
+                self?.ensureOnScreen(reason: "réveil")
+            }
         }
     }
 
     private func screensChanged() {
-        screen = NSScreen.screens.contains(screen) ? screen : (NSScreen.main ?? NSScreen.screens[0])
+        log.notice("Écrans modifiés : \(NSScreen.screens.map { "\($0.localizedName) \(NSStringFromRect($0.frame))" }.joined(separator: " | "), privacy: .public)")
+        ensureOnScreen(reason: "écrans modifiés")
+        // Au réveil, macOS réarrange parfois les écrans en plusieurs fois : on revérifie un peu plus tard.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.ensureOnScreen(reason: "écrans modifiés (+2 s)") }
+    }
+
+    /// Remet Capri sur un écran qui existe, les pieds au sol (ou dans son coin si elle notifie).
+    ///
+    /// Bug du 9 novembre : après une nuit écran externe branché puis un réveil avec un autre
+    /// agencement, elle était restée à cheval entre deux écrans, presque invisible. macOS considérait
+    /// alors sa fenêtre comme cachée, l'affichage était en pause… et elle ne bougeait plus jamais.
+    private func ensureOnScreen(reason: String) {
         guard !isDragging else { return }
-        feet.x = min(max(feet.x, xRange.lowerBound), xRange.upperBound)
-        if machine.state != .falling { feet.y = ground }
+        if case .falling = machine.state { return }
+        let before = feet
+        // L'écran sous ses pieds (ou le plus proche), en reprenant les objets NSScreen à jour.
+        screen = screenFor(CGPoint(x: feet.x, y: feet.y + 1))
+        if machine.state == .notifying {
+            screen = NSScreen.screens.first ?? screen
+            feet = cornerFeet
+        } else {
+            feet.x = min(max(feet.x, xRange.lowerBound), xRange.upperBound)
+            feet.y = ground
+        }
         moveWindow()
+        if hypot(feet.x - before.x, feet.y - before.y) > 1 {
+            log.notice("Repositionnée (\(reason, privacy: .public)) : \(NSStringFromPoint(before), privacy: .public) → \(NSStringFromPoint(self.feet), privacy: .public) sur \(self.screen.localizedName, privacy: .public)")
+        }
+    }
+
+    /// Ses pieds sont-ils bien sur un écran existant, au bon endroit ?
+    private var isWellPlaced: Bool {
+        guard NSScreen.screens.contains(where: { $0.frame.insetBy(dx: -2, dy: -2).contains(CGPoint(x: feet.x, y: feet.y + 1)) }) else { return false }
+        if machine.state == .notifying { return true }
+        return abs(feet.y - screenFor(CGPoint(x: feet.x, y: feet.y + 1)).visibleFrame.minY) < 2
+    }
+
+    /// Battement de cœur, toutes les 2 secondes, indépendant de l'affichage :
+    /// - le « cerveau » continue d'avancer même si l'affichage est en pause (fenêtre cachée) ;
+    /// - si elle n'est plus sur un écran valide, on la remet en place.
+    private func startHeartbeat() {
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.view.isPaused && !self.sleepRenderingPaused { self.machine.update() }
+                switch self.machine.state {
+                case .falling, .dragged, .floating, .teleporting, .appearing, .peeking: break   // en mouvement : on ne s'en mêle pas
+                default:
+                    if !self.isDragging && !self.isWellPlaced { self.ensureOnScreen(reason: "battement de cœur") }
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 }
