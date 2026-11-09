@@ -12,6 +12,8 @@ final class ClaudeBrain: ChatBrain {
     private let settings: CapriSettings
     /// L'identifiant de la conversation en cours, renvoyé par Claude. `nil` = nouvelle conversation.
     private var sessionID: String?
+    /// L'historique, rejoué à chaque message (voir `prompt(for:)`).
+    private var history: [(user: String, capri: String)] = []
     /// Donner ses pouvoirs à Capri (outils MCP + recherche web). Faux pour une discussion seule.
     var withPowers = true
     /// Vrai quand un outil de Capri travaille : le chien de garde patiente (ex. confirmation d'un Raccourci).
@@ -33,6 +35,7 @@ final class ClaudeBrain: ChatBrain {
 
     func reset() {
         sessionID = nil
+        history = []
     }
 
     /// Dossier de travail vide et dédié : Claude n'y trouve ni CLAUDE.md, ni réglages de projet.
@@ -46,7 +49,7 @@ final class ClaudeBrain: ChatBrain {
 
     private func arguments(message: String, systemPrompt: String) -> [String] {
         var args = [
-            "-p", message,
+            "-p", prompt(for: message),
             "--output-format", "stream-json",
             "--verbose",                         // obligatoire avec stream-json en mode -p
             "--include-partial-messages",        // les morceaux de texte au fur et à mesure
@@ -74,10 +77,34 @@ final class ClaudeBrain: ChatBrain {
         } else {
             args += ["--tools", "", "--strict-mcp-config"]   // discussion seule
         }
-        if let sessionID {
+        // Sans pouvoirs, on peut reprendre la session. Avec, on rejoue l'historique (voir prompt(for:)).
+        if !withPowers, let sessionID {
             args += ["--resume", sessionID]
         }
         return args
+    }
+
+    /// Avec les connecteurs claude.ai, on ne reprend PAS la session (--resume) : dans une session
+    /// reprise, Claude croit les connecteurs « déconnectés » et ne les utilise plus (constaté le 9 novembre).
+    /// On lance donc un processus neuf à chaque message, et on lui rappelle la conversation récente.
+    private func prompt(for message: String) -> String {
+        guard withPowers, !history.isEmpty else { return message }
+        var recent: [String] = []
+        var size = 0
+        for turn in history.reversed() {
+            let block = "Daniil : \(turn.user)\nCapri : \(turn.capri)"
+            if size + block.count > 12_000 { break }   // on garde les échanges récents, ~12 000 caractères
+            recent.insert(block, at: 0)
+            size += block.count
+        }
+        return """
+        <conversation_precedente>
+        \(recent.joined(separator: "\n\n"))
+        </conversation_precedente>
+
+        Nouveau message de Daniil :
+        \(message)
+        """
     }
 
     // MARK: - Réponse
@@ -133,6 +160,7 @@ final class ClaudeBrain: ChatBrain {
         defer { watchdog.cancel() }
 
         var newSessionID: String?
+        var replyText = ""
         var streamedText = false
         var finalResult: String?
         var resultIsError = false
@@ -163,6 +191,7 @@ final class ClaudeBrain: ChatBrain {
                            delta["type"] as? String == "text_delta",
                            let text = delta["text"] as? String {
                             streamedText = true
+                            replyText += text
                             continuation.yield(.text(text))
                         }
                     default:
@@ -197,8 +226,12 @@ final class ClaudeBrain: ChatBrain {
         }
 
         // Sans morceaux en direct (vieille version de claude ?), on envoie le résultat d'un coup.
-        if !streamedText, let finalResult { continuation.yield(.text(finalResult)) }
+        if !streamedText, let finalResult {
+            replyText = finalResult
+            continuation.yield(.text(finalResult))
+        }
         sessionID = newSessionID ?? sessionID
+        history.append((message, replyText))
     }
 }
 

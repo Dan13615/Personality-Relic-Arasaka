@@ -200,6 +200,28 @@ Il faut le connecter une fois : crée un « client OAuth » Google en suivant
 voit dans ton Drive QUE les fichiers qu'elle a créés elle-même (autorisation `drive.file`). Le jeton
 de connexion est rangé dans ton Trousseau macOS.
 
+### Tes services connectés (connecteurs claude.ai)
+
+Capri utilise aussi les connecteurs de ton compte Claude (claude.ai → Paramètres → Connecteurs) :
+Gmail, Google Agenda, Drive, Docs, Sheets, Slides, Slack, Supabase, Figma, Expo, Claude Docs.
+« Mes 3 derniers mails ? », « cherche le devis dans mon Drive », « résume le salon #général »…
+
+- **Lecture** (chercher, lister, lire) : automatique, avec une petite ligne « 🔌 Gmail · search threads ».
+- **Tout ce qui change quelque chose** (envoyer, publier, créer, modifier) : une carte dans la bulle,
+  avec le détail en français (destinataire, sujet, début du texte, requête SQL…) et trois boutons :
+  « Autoriser une fois », « Toujours pour cet outil », « Refuser ». Sans réponse en 2 min : refusé.
+- **Destructif** (supprimer, fusionner, exécuter du SQL, déployer…) : demande TOUJOURS, sans « Toujours ».
+- Menu → **« Autorisations… »** : la liste des outils autorisés « toujours » ; un clic en retire un.
+
+Pour ses rappels, notes et tâches, elle garde ses propres outils (sinon ses notifications ne
+marcheraient pas). Elle n'a toujours ni terminal, ni accès direct aux fichiers.
+
+Comment ça marche : `claude` charge les connecteurs de ton compte (on n'utilise donc plus
+`--strict-mcp-config`, qui les excluait). Ce qui n'est pas autorisé d'avance passe par
+`--permission-prompt-tool mcp__capri__approve` : le « portier » (Powers/ConnectorGate.swift) qui
+décide ou te demande. Chaque message lance un `claude` neuf, avec la conversation récente rejouée :
+dans une session reprise (`--resume`), Claude croyait les connecteurs déconnectés.
+
 ### Les autorisations macOS
 
 La première fois qu'elle en a besoin, macOS demande pour « Capri » : l'accès à l'agenda, et à
@@ -265,6 +287,7 @@ Capri/
     │   ├── Browser.swift         # son navigateur (WKWebView) + outils web
     │   ├── Calendar.swift        # agenda (EventKit) + outils de rappels
     │   ├── EventWatcher.swift    # surveille l'agenda et déclenche ses notifications
+    │   ├── ConnectorGate.swift   # le portier des connecteurs claude.ai (confirmations)
     │   ├── GoogleAuth.swift      # connexion Google (OAuth + PKCE, jeton dans le Trousseau)
     │   └── GoogleTools.swift     # Carnet de Capri (Google Docs) et Google Tasks
     └── Resources/Sprites/*.png   # les sprites découpés
