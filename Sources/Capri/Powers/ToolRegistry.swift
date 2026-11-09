@@ -77,8 +77,9 @@ extension String {
 protocol ToolObserver: AnyObject {
     func toolStarted(id: UUID, line: String)
     func toolFinished(id: UUID, result: ToolResult)
-    /// Pose une question avec des choix dans la bulle. Renvoie le choix, ou `nil` si impossible.
-    func askChoice(_ question: String, choices: [String]) async -> String?
+    /// Pose une question avec des choix dans la bulle. Renvoie le choix, ou `nil` si impossible
+    /// ou sans réponse avant `timeout` secondes.
+    func askChoice(_ question: String, choices: [String], timeout: TimeInterval?) async -> String?
 }
 
 /// Le registre des outils : la liste de tous les pouvoirs de Capri.
@@ -126,7 +127,7 @@ final class ToolRegistry {
     }
 
     /// Demande une confirmation dans la bulle (pour les outils sensibles).
-    func ask(_ question: String, choices: [String]) async -> String? {
-        await observer?.askChoice(question, choices: choices)
+    func ask(_ question: String, choices: [String], timeout: TimeInterval? = nil) async -> String? {
+        await observer?.askChoice(question, choices: choices, timeout: timeout)
     }
 }

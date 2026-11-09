@@ -9,11 +9,13 @@ import Foundation
 /// directement, sans pouvoirs. Affiche l'humeur, la réponse, les actions et les temps.
 @MainActor
 enum SelfTest {
-    static func run(messages: [String]) {
+    static func run(messages: [String], answers: [String]? = nil) {
         print("Persona : \(Persona.fileURL?.path ?? "introuvable")")
         // 1. Par l'app en cours d'exécution (avec les pouvoirs).
         Task.detached {
-            let reached = ToolSocket.request(["op": "chat", "messages": messages]) { reply in
+            var request: [String: Any] = ["op": "chat", "messages": messages]
+            if let answers { request["answers"] = answers }
+            let reached = ToolSocket.request(request) { reply in
                 print("\n» \(reply["message"] as? String ?? "")")
                 print("[humeur : \(reply["mood"] as? String ?? "?")]")
                 for line in reply["lines"] as? [String] ?? [] { print(line) }

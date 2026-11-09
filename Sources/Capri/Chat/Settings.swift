@@ -31,6 +31,8 @@ struct CapriSettings: Codable {
     var notificationSound: String = "Glass"
     /// Identifiant du Google Doc « Carnet de Capri » (créé à la première note).
     var notesDocumentID: String?
+    /// Outils de connecteurs autorisés « toujours » (révocables dans le menu « Autorisations… »).
+    var connectorAlways: [String] = []
 
     // Lecture tolérante : un réglage absent du fichier garde sa valeur par défaut.
     init() {}
@@ -50,6 +52,7 @@ struct CapriSettings: Codable {
         notifyAllDayEvents = try c.decodeIfPresent(Bool.self, forKey: .notifyAllDayEvents) ?? d.notifyAllDayEvents
         notificationSound = try c.decodeIfPresent(String.self, forKey: .notificationSound) ?? d.notificationSound
         notesDocumentID = try c.decodeIfPresent(String.self, forKey: .notesDocumentID)
+        connectorAlways = try c.decodeIfPresent([String].self, forKey: .connectorAlways) ?? d.connectorAlways
     }
 
     // MARK: Fichiers

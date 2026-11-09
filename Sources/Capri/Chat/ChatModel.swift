@@ -98,6 +98,7 @@ final class ChatModel: ObservableObject, ToolObserver {
             parser = MoodParser()
             currentCapriID = nil
         case .webTool(let name):
+            guard name == "WebSearch" || name == "WebFetch" else { return }   // ToolSearch : interne, pas affiché
             currentCapriID = nil
             let line = name == "WebFetch" ? "🌐 Je lis une page web…" : "🌐 Je cherche sur le web…"
             messages.append(Message(role: .action, text: line))
@@ -189,11 +190,31 @@ final class ChatModel: ObservableObject, ToolObserver {
         if !result.buttons.isEmpty { setButtons(result.buttons, on: messageID, suffix: " — annulé") }
     }
 
-    func askChoice(_ question: String, choices: [String]) async -> String? {
-        await withCheckedContinuation { continuation in
+    /// Réponses automatiques, pour le mode --selftest uniquement (aucune bulle à cliquer).
+    var scriptedAnswers: [String]?
+
+    func askChoice(_ question: String, choices: [String], timeout: TimeInterval?) async -> String? {
+        if var answers = scriptedAnswers {
+            let answer = answers.isEmpty ? nil : answers.removeFirst()
+            scriptedAnswers = answers
+            messages.append(Message(role: .notice, text: question + "\n→ réponse du test : \(answer ?? "aucune")"))
+            return answer
+        }
+        onMood(.curieuse)   // elle attend ta réponse, l'air interrogateur
+        return await withCheckedContinuation { continuation in
             let message = Message(role: .notice, text: question)
             pendingChoices[message.id] = continuation
             messages.append(message)
+            if let timeout {
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                    guard let self, let pending = self.pendingChoices.removeValue(forKey: message.id) else { return }
+                    if let i = self.messages.firstIndex(where: { $0.id == message.id }) {
+                        self.messages[i].buttons = []
+                        self.messages[i].text += "\n(sans réponse : refusé)"
+                    }
+                    pending.resume(returning: nil)
+                }
+            }
             let buttons = choices.enumerated().map { index, choice in
                 ChatButton(title: choice, isPrimary: index == 0) { [weak self] in
                     self?.pendingChoices.removeValue(forKey: message.id)?.resume(returning: choice)

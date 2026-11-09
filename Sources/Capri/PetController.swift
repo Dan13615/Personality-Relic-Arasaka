@@ -547,6 +547,13 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
                                               self?.settings.notesDocumentID = id
                                               self?.settings.save()
                                           }))
+        // Le portier des connecteurs claude.ai (appelé par Claude Code via --permission-prompt-tool).
+        registry.register([ConnectorGate.tool(registry: registry, settings: { [unowned self] in self.settings },
+                                              remember: { [weak self] name in
+                                                  guard let self, !self.settings.connectorAlways.contains(name) else { return }
+                                                  self.settings.connectorAlways.append(name)
+                                                  self.settings.save()
+                                              })])
         browser.model.searchURL = { [unowned self] in self.settings.searchURL }
         calendar.saveCalendarID = { [weak self] id in
             self?.settings.reminderCalendarID = id
@@ -572,7 +579,8 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             let result = await registry.call(name, arguments: request["arguments"] as? [String: Any] ?? [:])
             send(["text": result.text, "isError": result.isError])
         case "chat":
-            await runSelfTest(messages: request["messages"] as? [String] ?? [], send: send)
+            await runSelfTest(messages: request["messages"] as? [String] ?? [],
+                              answers: request["answers"] as? [String], send: send)
         case "google-test-cleanup":
             send(await googleTestCleanup())
         case "debug-drop":
@@ -597,11 +605,13 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
     /// Le mode --selftest : une conversation à part (invisible), avec tous les pouvoirs,
     /// dont on renvoie le déroulé au Terminal. Capri s'anime quand même à l'écran.
-    private func runSelfTest(messages: [String], send: @escaping ([String: Any]) -> Void) async {
+    private func runSelfTest(messages: [String], answers: [String]?, send: @escaping ([String: Any]) -> Void) async {
         let brain = ClaudeBrain(settings: settings)
         brain.isToolRunning = { [weak self] in (self?.registry.activeCalls ?? 0) > 0 }
         let model = ChatModel { brain }
         model.registry = registry
+        // Les demandes d'autorisation reçoivent ces réponses dans l'ordre (sinon : refus).
+        model.scriptedAnswers = answers ?? []
         model.onThinking = { [weak self] in self?.machine.startThinking() }
         model.onReplyEnded = { [weak self] in self?.machine.replyEnded() }
         for message in messages {
@@ -771,6 +781,12 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
 
     func disconnectGoogle() {
         googleAuth.disconnect()
+    }
+
+    /// Menu « Autorisations… » : retire un outil autorisé « toujours ».
+    func revokeConnector(_ name: String) {
+        settings.connectorAlways.removeAll { $0 == name }
+        settings.save()
     }
 
     /// Menu « Agenda des rappels » : demande l'accès si besoin.
