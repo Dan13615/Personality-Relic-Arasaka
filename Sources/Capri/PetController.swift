@@ -106,8 +106,28 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         xRange.lowerBound + CGFloat(fraction) * (xRange.upperBound - xRange.lowerBound)
     }
 
+    /// Demande à déplacer la fenêtre là où sont ses pieds.
+    ///
+    /// Le déplacement réel est fait juste APRÈS, au prochain tour de la boucle principale, jamais
+    /// pendant que SpriteKit calcule une image. Bug du 9 novembre : déplacer la fenêtre depuis la boucle
+    /// d'animation vers un écran d'une autre densité (Retina ×2 ↔ écran externe ×1) faisait redessiner
+    /// SpriteKit « tout de suite », alors qu'il était déjà en train de dessiner : il s'attendait lui-même
+    /// pour toujours, et Capri gelait dès qu'elle passait sur l'autre écran.
     private func moveWindow() {
-        panel.setFrameOrigin(CGPoint(x: (feet.x - windowSize.width / 2).rounded(), y: feet.y.rounded()))
+        guard !windowMovePending else { return }   // plusieurs demandes dans la même image = un seul déplacement
+        windowMovePending = true
+        DispatchQueue.main.async { [weak self] in self?.applyWindowPosition() }
+    }
+    private var windowMovePending = false
+
+    private func applyWindowPosition() {
+        windowMovePending = false
+        let origin = CGPoint(x: (feet.x - windowSize.width / 2).rounded(), y: feet.y.rounded())
+        let previousScreen = panel.screen
+        panel.setFrameOrigin(origin)
+        if let now = panel.screen, now != previousScreen {
+            log.notice("Fenêtre passée sur l'écran \(now.localizedName, privacy: .public) (×\(now.backingScaleFactor), \(now.maximumFramesPerSecond) Hz)")
+        }
         // Les bulles suivent Capri quand elle bouge (par exemple quand on la traîne).
         if chat.isOpen { chat.place(near: spriteRect, on: screen) }
         speech.follow(sprite: spriteRect, on: screen)
@@ -553,6 +573,23 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             send(["text": result.text, "isError": result.isError])
         case "chat":
             await runSelfTest(messages: request["messages"] as? [String] ?? [], send: send)
+        case "google-test-cleanup":
+            send(await googleTestCleanup())
+        case "debug-drop":
+            // Test : la lâcher en l'air à un endroit précis (pour vérifier les passages d'un écran à l'autre).
+            guard !isDragging, let x = request["x"] as? Double, let y = request["y"] as? Double else { send(["ok": false]); return }
+            if currentNotification != nil { dismissNotification(reason: "test") }
+            feet = CGPoint(x: x, y: y)
+            velocity = .zero
+            silentLanding = true
+            machine.dragBegan()
+            moveWindow()
+            machine.dragEnded()
+            send(["ok": true])
+        case "debug-state":
+            send(["state": String(describing: machine.state), "feet": [feet.x, feet.y],
+                  "window": NSStringFromRect(panel.frame), "screen": panel.screen?.localizedName ?? "?",
+                  "paused": view.isPaused])
         default:
             send(["error": "opération inconnue"])
         }
@@ -592,6 +629,37 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
             send(["message": message, "mood": mood, "lines": lines,
                   "firstWords": firstWords ?? -1, "total": Date().timeIntervalSince(start)])
         }
+    }
+
+    /// Pour les tests seulement : efface ce qui est marqué « [TEST CAPRI] » côté Google.
+    /// Le Carnet n'est supprimé que s'il ne contient QUE des notes de test.
+    private func googleTestCleanup() async -> [String: Any] {
+        var report: [String: Any] = [:]
+        do {
+            let json = try await googleAPI.request("GET", "\(GoogleTools.tasksBase)?showCompleted=true&showHidden=true&maxResults=100")
+            var deleted = 0
+            for task in json["items"] as? [[String: Any]] ?? [] where (task["title"] as? String ?? "").contains("[TEST CAPRI]") {
+                guard let id = task["id"] as? String else { continue }
+                _ = try await googleAPI.request("DELETE", "\(GoogleTools.tasksBase)/\(id)")
+                deleted += 1
+            }
+            report["tâches supprimées"] = deleted
+            if let id = settings.notesDocumentID {
+                let document = try await googleAPI.request("GET", "https://docs.googleapis.com/v1/documents/\(id)")
+                let entries = GoogleFormat.entries(in: GoogleFormat.documentText(document))
+                if entries.allSatisfy({ $0.contains("[TEST CAPRI]") }) {
+                    _ = try await googleAPI.request("DELETE", "https://www.googleapis.com/drive/v3/files/\(id)")
+                    settings.notesDocumentID = nil
+                    settings.save()
+                    report["carnet"] = "supprimé (\(entries.count) note(s) de test)"
+                } else {
+                    report["carnet"] = "gardé : il contient de vraies notes"
+                }
+            }
+        } catch {
+            report["erreur"] = error.localizedDescription
+        }
+        return report
     }
 
     // MARK: - Notifications d'agenda
@@ -818,7 +886,7 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
     }
 
     private func screensChanged() {
-        log.notice("Écrans modifiés : \(NSScreen.screens.map { "\($0.localizedName) \(NSStringFromRect($0.frame))" }.joined(separator: " | "), privacy: .public)")
+        log.notice("Écrans modifiés : \(NSScreen.screens.map { "\($0.localizedName) \(NSStringFromRect($0.frame)) ×\($0.backingScaleFactor) \($0.maximumFramesPerSecond) Hz" }.joined(separator: " | "), privacy: .public)")
         ensureOnScreen(reason: "écrans modifiés")
         // Au réveil, macOS réarrange parfois les écrans en plusieurs fois : on revérifie un peu plus tard.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.ensureOnScreen(reason: "écrans modifiés (+2 s)") }
@@ -862,7 +930,23 @@ final class PetController: NSObject, @preconcurrency SKSceneDelegate {
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.view.isPaused && !self.sleepRenderingPaused { self.machine.update() }
+                if self.view.isPaused && !self.sleepRenderingPaused {
+                    // Affichage en pause alors qu'elle ne dort pas (fenêtre cachée ou hors de tout écran) :
+                    // la boucle d'animation ne tourne plus, donc on fait avancer les choses ici.
+                    self.machine.update()
+                    if case .falling = self.machine.state, !self.isDragging {
+                        // Une chute dépend de l'animation : on la fait atterrir directement au sol.
+                        self.screen = self.screenFor(self.feet)
+                        self.feet.x = min(max(self.feet.x, self.xRange.lowerBound), self.xRange.upperBound)
+                        self.feet.y = self.ground
+                        self.velocity = .zero
+                        self.moveWindow()
+                        log.notice("Chute terminée par le battement de cœur (affichage en pause)")
+                        self.machine.landed()
+                        self.presentNextNotification()
+                        return
+                    }
+                }
                 switch self.machine.state {
                 case .falling, .dragged, .floating, .teleporting, .appearing, .peeking: break   // en mouvement : on ne s'en mêle pas
                 default:
